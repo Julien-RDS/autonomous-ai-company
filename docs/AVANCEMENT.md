@@ -12,7 +12,7 @@
 - SQLite ou PostgreSQL : réunions, messages, dépenses, tickets, feedbacks.
 - Planification quotidienne avec APScheduler.
 - Récupération des décisions des 3 réunions terminées précédentes.
-- Manquent : vraie reprise LangGraph à l'étape interrompue via checkpointer persistant, file de travaux Celery/Redis, détection/verrouillage multi-processus, sauvegardes automatiques.
+- Lot 2 : reprise LangGraph PostgreSQL, file SQL durable, leases, heartbeats, tentatives bornées et audit implémentés pour les workflows MOCK. Sauvegardes documentées ; automatisation et activation des workers réels restent à réaliser.
 
 ## Phase 3 — Outils et exécution : PARTIELLEMENT IMPLÉMENTÉE
 
@@ -45,3 +45,11 @@
 - Tests unitaires/intégration de la démonstration : réussis dans l'environnement de génération.
 - Tableau de bord et chaîne complète de production de fichiers : testés en mode simulation.
 - Intégration réelle des SDK, LangGraph officiel, PostgreSQL et APScheduler : code écrit mais **non testé ici** (l'accès réseau de l'environnement de génération n'a pas permis d'installer les dépendances manquantes). Une validation sur Ubuntu/WSL est nécessaire après `pip install -r requirements.txt`.
+
+## Validation du Lot 2
+
+Migrations vierges/historiques, Decimal, réservations concurrentes, leases,
+checkpoints et crashs de processus testés avec PostgreSQL 16 réel.
+Démarrage Compose (migration puis worker) et workflow MOCK validés.
+Voir `LOT_2_PERSISTENCE.md` pour le protocole et les limites ; aucune API payante
+n'a été contactée. Le résultat de la CI distante n'est pas encore observé.

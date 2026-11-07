@@ -4,12 +4,13 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import select
 
 from .budget import Budget
 from .config import Settings
-from .database import Run, Task, session_factory
+from .database import Run, Task, Approval, AuditEvent, session_factory
 from .prototyping import generate_prototype
 from .routing import rank_providers
 from .workflow import Board
@@ -44,7 +45,7 @@ def main():
     p = sub.add_parser("measure", help="Consigner le résultat humain d'une expérimentation")
     p.add_argument("task_id")
     p.add_argument("--success", required=True, type=int, choices=(0, 1))
-    p.add_argument("--value-eur", default=0.0, type=float)
+    p.add_argument("--value-eur", default=0.0, type=Decimal)
     p.add_argument("--notes", default="")
     args = parser.parse_args()
     try:
@@ -66,11 +67,13 @@ def main():
             for row in rank_providers(sessions):
                 print(row)
         elif args.action == "approve":
-            with sessions.begin() as db:
-                t = db.get(Task, args.task_id)
-                if not t or t.status != "pending_review":
-                    raise ValueError("Tâche inconnue ou déjà traitée")
-                t.status = "approved"
+            from .approvals import approve_task
+            if sessions.kw['bind'].dialect.name == 'postgresql':
+                from .worker import checkpoints
+                with checkpoints(settings.db_url, f"approval:{args.task_id}") as saver:
+                    approve_task(sessions, args.task_id, checkpointer=saver)
+            else:
+                approve_task(sessions, args.task_id)
             print("Tâche approuvée. Aucun outil externe n'a été lancé.")
         elif args.action == "prototype":
             provider, files = generate_prototype(sessions, settings, budget, args.task_id)

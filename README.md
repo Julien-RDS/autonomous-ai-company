@@ -113,7 +113,7 @@ docker compose up -d postgres
 python -m company init
 ```
 
-Le service Postgres expose le port uniquement sur l'interface locale ; volume persistant `postgres_data`. Pour la démo et l'apprentissage, SQLite suffit. Ne pas publier le port sur internet. Cette version crée les tables au démarrage mais n'intègre pas encore de migrations Alembic ou de verrou distribué.
+Le service Postgres expose le port uniquement sur l'interface locale ; volume persistant `postgres_data`. Pour la démo et l'apprentissage, SQLite suffit. Ne pas publier le port sur internet. Les migrations sont versionnées avec Alembic ; voir le guide du Lot 2.
 
 ## Réunions quotidiennes autonomes
 
@@ -123,7 +123,7 @@ Configurer `SCHEDULE_HOUR=9`, `SCHEDULE_MINUTE=0`, `TIMEZONE=Europe/Paris` puis 
 python -m company scheduler
 ```
 
-Un cycle est lancé à l'heure programmée tant que le processus tourne. Pour du 24 h / 24, l'exécuter sous un service systemd, Docker ou serveur dédié avec redémarrage, sauvegardes et journaux. **Ne pas lancer plusieurs planificateurs** ; les réservations budgétaires ne sont pas atomiques face à plusieurs processus.
+Un cycle est lancé à l'heure programmée tant que le processus tourne. Pour du 24 h / 24, l'exécuter sous un service systemd, Docker ou serveur dédié avec redémarrage, sauvegardes et journaux. **Ne pas lancer plusieurs planificateurs** ; le scheduler ne dispose pas de verrou global. Les réservations budgétaires sont transactionnelles.
 
 ## Architecture
 
@@ -183,3 +183,12 @@ git push -u origin main
 ```
 
 Utiliser `gh repo create autonomous-ai-company --private --source=. --remote=origin --push` si GitHub CLI est configuré, à la place des deux dernières commandes; ne pas exécuter les deux méthodes à la fois.
+
+## Persistance et reprise (Lot 2)
+
+PostgreSQL 16, migrations Alembic, montants Decimal, file durable avec leases,
+checkpoints LangGraph et approbations persistantes sont disponibles.
+Le worker durable fonctionne en simulation. Démarrage : `docker compose up --build -d`
+après configuration de POSTGRES_PASSWORD dans `.env`.
+Les commandes, migrations, sauvegardes, tests de crash et limites sont détaillés
+dans [docs/LOT_2_PERSISTENCE.md](docs/LOT_2_PERSISTENCE.md).
