@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import httpx
+import hashlib
 
 
 class SearchService:
@@ -11,7 +12,8 @@ class SearchService:
     def search(self, run_id: str, query: str) -> list[dict]:
         if self.settings.mock or not self.settings.tavily_key:
             return []
-        reservation = self.budget.reserve(run_id, "tavily", self.settings.tavily_search_price, "web_search")
+        reservation = self.budget.reserve(run_id, "tavily", self.settings.tavily_search_price, "web_search",
+                                          operation_key=f"{run_id}:search:{hashlib.sha256(query.encode()).hexdigest()}")
         try:
             with httpx.Client(timeout=20) as client:
                 response = client.post("https://api.tavily.com/search", json={

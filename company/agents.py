@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 
 from .database import Message
+from sqlalchemy import select
 
 
 logger = logging.getLogger(__name__)
@@ -144,13 +145,19 @@ class AgentService:
         self.provider = ProviderClient(settings)
 
     def call(self, provider: str, stage: str, prompt: str, run_id: str) -> str:
+        with self.sessions() as db:
+            cached = db.scalar(select(Message).where(
+                Message.run_id == run_id, Message.provider == provider,
+                Message.stage == stage, Message.success.is_(True)))
+            if cached:
+                return cached.text
         # Pas de conversation infinie : 1 appel par étape, sans retry automatique.
         prompt = prompt[:9000]
         if self.settings.mock:
             reservation = None
         else:
             estimate = self.budget.token_estimate(prompt, provider, self.settings.max_output_tokens)
-            reservation = self.budget.reserve(run_id, provider, estimate, stage)
+            reservation = self.budget.reserve(run_id, provider, estimate, stage, operation_key=f"{run_id}:{provider}:{stage}")
         started = time.monotonic()
         result = None
         error = None

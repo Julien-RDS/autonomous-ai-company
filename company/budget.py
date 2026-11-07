@@ -7,6 +7,8 @@ from decimal import Decimal
 from sqlalchemy import func, select, text
 
 from .database import Ledger
+from .money import money
+import json
 
 
 class BudgetExceeded(RuntimeError):
@@ -28,9 +30,12 @@ class Budget:
                 q = q.where(Ledger.created_at >= start)
             return Decimal(str(db.scalar(q) or 0))
 
-    def reserve(self, run_id: str, provider: str, estimate: Decimal, details: str = "") -> str:
+    def reserve(self, run_id: str, provider: str, estimate: Decimal, details: str = "", *, operation_key: str | None = None, currency: str = "EUR") -> str:
         if not estimate.is_finite() or estimate <= 0:
             raise ValueError("Estimation finie strictement positive requise")
+        estimate = money(estimate, currency)
+        if estimate == 0:
+            raise ValueError("Estimation sous la précision monétaire")
         # Serialize check-and-insert across processes sharing the same database.
         with self.sessions.begin() as db:
             dialect = db.get_bind().dialect.name
@@ -40,6 +45,8 @@ class Budget:
                 db.execute(text("SELECT pg_advisory_xact_lock(7109241)"))
             else:
                 raise RuntimeError("Réservations supportées sur SQLite et PostgreSQL uniquement")
+            if operation_key and db.scalar(select(Ledger.id).where(Ledger.operation_key == operation_key)):
+                raise RuntimeError("Opération déjà réservée; rapprochement requis avant nouvel appel")
             now = datetime.now(timezone.utc)
             start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
             total = select(func.coalesce(func.sum(Ledger.amount_eur), 0))
@@ -49,7 +56,10 @@ class Budget:
                 raise BudgetExceeded(f"Plafond mensuel local atteint ({monthly:.4f} € comptabilisés)")
             if one_run + estimate > self.settings.run_limit:
                 raise BudgetExceeded(f"Plafond de session atteint ({one_run:.4f} € comptabilisés)")
-            record = Ledger(run_id=run_id, provider=provider, amount_eur=float(estimate), details=details[:250])
+            record = Ledger(run_id=run_id, provider=provider, amount_eur=estimate, estimated_eur=estimate, currency=currency,
+                            operation_key=operation_key,
+                            tariff_version=json.dumps([str(p) for p in self.settings.prices.get(provider, ())]),
+                            details=details[:250])
             db.add(record)
             db.flush()
             return record.id
@@ -58,22 +68,36 @@ class Budget:
         if actual is not None and (not actual.is_finite() or actual < 0):
             raise ValueError("Coût réel fini positif ou nul requis")
         with self.sessions.begin() as db:
-            item = db.get(Ledger, ledger_id)
+            if db.get_bind().dialect.name == "sqlite":
+                db.execute(text("BEGIN IMMEDIATE"))
+            else:
+                db.execute(text("SELECT pg_advisory_xact_lock(7109241)"))
+            item = db.scalar(select(Ledger).where(Ledger.id == ledger_id).with_for_update())
             if item is None:
                 raise ValueError("Réservation introuvable")
             if item.state != "reserved":
                 raise ValueError("Réservation déjà régularisée")
             if actual is not None:
                 # Sur-facturation par rapport à la prévision possible : voir README.
-                item.amount_eur = float(actual)
+                item.amount_eur = money(actual)
+                item.actual_eur = money(actual)
             item.state = "unknown" if error else "settled"
 
     def token_estimate(self, prompt: str, provider: str, max_output: int) -> Decimal:
         input_price, output_price = self.settings.prices[provider]
         # Prévision prudente mais NON garantie (tokenisation, raisonnement, cache variables).
         estimated_input = len(prompt.encode("utf-8")) // 2 + 200
-        return (Decimal(estimated_input) * input_price + Decimal(max_output) * output_price) / Decimal(1_000_000)
+        return money((Decimal(estimated_input) * input_price + Decimal(max_output) * output_price) / Decimal(1_000_000))
 
     def actual_cost(self, provider: str, input_tokens: int, output_tokens: int) -> Decimal:
         p_in, p_out = self.settings.prices[provider]
-        return (Decimal(input_tokens) * p_in + Decimal(output_tokens) * p_out) / Decimal(1_000_000)
+        return money((Decimal(input_tokens) * p_in + Decimal(output_tokens) * p_out) / Decimal(1_000_000))
+
+    def reconcile_abandoned(self, before: datetime) -> int:
+        """Keep all possibly spent money; never retry or release an uncertain charge."""
+        from sqlalchemy import update
+        with self.sessions.begin() as db:
+            result = db.execute(update(Ledger).where(
+                Ledger.state == "reserved", Ledger.created_at < before
+            ).values(state="unknown"))
+            return result.rowcount

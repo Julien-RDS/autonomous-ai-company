@@ -152,7 +152,7 @@ Ne prétends pas que les données absentes ont été vérifiées."""
                              "next_action": selected_votes[0]["next_action"] if selected_votes else selected["experiment"],
                              "verified_market": False}}
 
-    def graph(self):
+    def graph(self, checkpointer=None, interrupt_after=None):
         builder = StateGraph(BoardState)
         for name, handler in (("propose", self.propose), ("research", self.research),
                               ("critique", self.critique), ("vote", self.vote), ("decide", self.decide)):
@@ -163,20 +163,49 @@ Ne prétends pas que les données absentes ont été vérifiées."""
         builder.add_edge("critique", "vote")
         builder.add_edge("vote", "decide")
         builder.add_edge("decide", END)
+        if checkpointer is not None:
+            return builder.compile(checkpointer=checkpointer, interrupt_after=interrupt_after)
         return builder.compile()
 
-    def run_once(self) -> tuple[str, dict]:
+    def run_once(self, run_id=None, checkpointer=None, lease=None) -> tuple[str, dict]:
         with self.sessions.begin() as db:
-            run = Run(mission=self.settings.mission, mode="mock" if self.settings.mock else "real")
-            db.add(run)
-            db.flush()
-            run_id = run.id
+            if run_id is None:
+                run = Run(mission=self.settings.mission, mode="mock" if self.settings.mock else "real")
+                db.add(run)
+                db.flush()
+                run_id = run.id
+            else:
+                run = db.get(Run, run_id)
+                if run is None:
+                    raise ValueError("Workflow inconnu")
+                if run.mode != ("mock" if self.settings.mock else "real"):
+                    raise ValueError("Mode du workflow incompatible")
+                if run.status == "completed":
+                    return run_id, json.loads(run.result_json)
+            mission = run.mission
         try:
-            result = self.graph().invoke({"run_id": run_id, "mission": self.settings.mission, "memory": self.context()})
+            graph = self.graph(checkpointer)
+            inputs = {"run_id": run_id, "mission": mission, "memory": self.context()}
+            if checkpointer is None:
+                result = graph.invoke(inputs)
+            else:
+                config = {"configurable": {"thread_id": run_id}}
+                snapshot = graph.get_state(config)
+                if snapshot.values and not snapshot.next:
+                    result = snapshot.values
+                else:
+                    result = graph.invoke(None if snapshot.values else inputs, config)
+
             selection = result["decision"]
             report_path = self.create_report(run_id, result)
             with self.sessions.begin() as db:
-                run = db.get(Run, run_id)
+                if lease is not None:
+                    from .queue import Queue
+                    Queue(self.sessions)._owned(db, *lease)
+                run = db.scalar(select(Run).where(Run.id == run_id).with_for_update())
+                if run.status == "completed":
+                    return run_id, json.loads(run.result_json)
+                run.result_json = json.dumps(result, ensure_ascii=False)
                 run.status = "completed"
                 run.finished_at = datetime.now(timezone.utc)
                 run.decision = selection["proposal"]["title"]
@@ -192,8 +221,9 @@ Ne prétends pas que les données absentes ont été vérifiées."""
         except Exception:
             with self.sessions.begin() as db:
                 run = db.get(Run, run_id)
-                run.status = "failed"
-                run.finished_at = datetime.now(timezone.utc)
+                if run.status != "completed":
+                    run.status = "failed"
+                    run.finished_at = datetime.now(timezone.utc)
             raise
 
     def create_report(self, run_id: str, result: dict) -> Path:
