@@ -76,3 +76,17 @@ applicatif ni checkpoints persistants dans ce lot.
 4. Séparer données mock/réelles et événements d'audit ; définir la réconciliation
    des coûts inconnus avant toute politique de retries bornés.
 5. Tester crash/reprise, concurrence multi-processus et arrêt du planificateur.
+
+## Livraison et accès distant
+
+La branche `feat/lot-1-audit` est poussée sur origin. Un cycle CLI `init`, `once`,
+`status` sur une base SQLite temporaire s'est terminé avec rapport, deux tâches
+`pending_review` et coût nul. L'arbre de travail est propre après commit.
+La création de PR par `gh pr create --draft` est bloquée :
+`POST https://api.github.com/graphql` renvoie `Forbidden`, tout comme une lecture
+REST du dépôt. La lecture et l'écriture Git via le proxy fonctionnent ; elles
+ne prouvent pas l'accès API. Aucun jeton supplémentaire demandé ou extrait.
+La description de PR est conservée dans `/workspace/lot-1-pr.md`.
+Pour terminer la livraison, rétablir l'accès API GitHub de cet environnement ou
+créer manuellement une PR **de brouillon** depuis la branche poussée, puis vérifier
+la matrice CI distante avant fusion. Aucune PR créée ou fusionnée à ce stade.
