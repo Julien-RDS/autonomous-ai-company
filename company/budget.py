@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from .database import Ledger
 
@@ -29,26 +29,40 @@ class Budget:
             return Decimal(str(db.scalar(q) or 0))
 
     def reserve(self, run_id: str, provider: str, estimate: Decimal, details: str = "") -> str:
-        if estimate < 0:
-            raise ValueError("Estimation négative")
-        # Une seule instance d'orchestrateur doit gérer le budget local.
-        monthly = self.totals()
-        one_run = self.totals(run_id)
-        if monthly + estimate > self.settings.monthly_limit:
-            raise BudgetExceeded(f"Plafond mensuel local atteint ({monthly:.4f} € comptabilisés)")
-        if one_run + estimate > self.settings.run_limit:
-            raise BudgetExceeded(f"Plafond de session atteint ({one_run:.4f} € comptabilisés)")
+        if not estimate.is_finite() or estimate <= 0:
+            raise ValueError("Estimation finie strictement positive requise")
+        # Serialize check-and-insert across processes sharing the same database.
         with self.sessions.begin() as db:
+            dialect = db.get_bind().dialect.name
+            if dialect == "sqlite":
+                db.execute(text("BEGIN IMMEDIATE"))
+            elif dialect == "postgresql":
+                db.execute(text("SELECT pg_advisory_xact_lock(7109241)"))
+            else:
+                raise RuntimeError("Réservations supportées sur SQLite et PostgreSQL uniquement")
+            now = datetime.now(timezone.utc)
+            start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+            total = select(func.coalesce(func.sum(Ledger.amount_eur), 0))
+            monthly = Decimal(str(db.scalar(total.where(Ledger.created_at >= start)) or 0))
+            one_run = Decimal(str(db.scalar(total.where(Ledger.run_id == run_id)) or 0))
+            if monthly + estimate > self.settings.monthly_limit:
+                raise BudgetExceeded(f"Plafond mensuel local atteint ({monthly:.4f} € comptabilisés)")
+            if one_run + estimate > self.settings.run_limit:
+                raise BudgetExceeded(f"Plafond de session atteint ({one_run:.4f} € comptabilisés)")
             record = Ledger(run_id=run_id, provider=provider, amount_eur=float(estimate), details=details[:250])
             db.add(record)
             db.flush()
             return record.id
 
     def settle(self, ledger_id: str, actual: Decimal | None, error: bool = False) -> None:
+        if actual is not None and (not actual.is_finite() or actual < 0):
+            raise ValueError("Coût réel fini positif ou nul requis")
         with self.sessions.begin() as db:
             item = db.get(Ledger, ledger_id)
             if item is None:
                 raise ValueError("Réservation introuvable")
+            if item.state != "reserved":
+                raise ValueError("Réservation déjà régularisée")
             if actual is not None:
                 # Sur-facturation par rapport à la prévision possible : voir README.
                 item.amount_eur = float(actual)

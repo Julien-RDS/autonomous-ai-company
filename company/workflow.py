@@ -14,7 +14,7 @@ except ModuleNotFoundError:  # Mode hors ligne : repli limité, pas le moteur La
     from .minigraph import END, START, StateGraph
 from sqlalchemy import select
 
-from .agents import AgentService
+from .agents import AgentService, safe_error
 from .database import Message, Run, Task
 from .research import SearchService
 
@@ -79,7 +79,7 @@ title, problem, customer, validation_query (une requête web factuelle), experim
                 obj["id"] = provider
                 proposals.append(obj)
             except Exception as exc:
-                errors.append(f"proposition {provider}: {type(exc).__name__}: {str(exc)[:180]}")
+                errors.append(f"proposition {provider}: {safe_error(exc)}")
         if len(proposals) < 2:
             raise RuntimeError(f"Moins de 2 propositions valides : {errors}")
         return {"proposals": proposals, "errors": errors}
@@ -90,7 +90,7 @@ title, problem, customer, validation_query (une requête web factuelle), experim
             try:
                 sources[proposal["id"]] = self.searcher.search(state["run_id"], proposal["validation_query"])
             except Exception as exc:
-                errors.append(f"recherche {proposal['id']}: {type(exc).__name__}: {str(exc)[:150]}")
+                errors.append(f"recherche {proposal['id']}: {safe_error(exc)}")
                 sources[proposal["id"]] = []
         return {"sources": sources, "errors": errors}
 
@@ -108,7 +108,7 @@ Si les résultats web sont absents, dis explicitement que la demande et la concu
             try:
                 critiques[provider] = self.agents.call(provider, "critique", prompt, state["run_id"])[:3000]
             except Exception as exc:
-                errors.append(f"critique {provider}: {type(exc).__name__}: {str(exc)[:150]}")
+                errors.append(f"critique {provider}: {safe_error(exc)}")
         return {"critiques": critiques, "errors": errors}
 
     def vote(self, state: BoardState) -> dict:
@@ -134,7 +134,7 @@ Ne prétends pas que les données absentes ont été vérifiées."""
                         raise ValueError(f"Vote : champ {field} invalide")
                 votes.append({"agent": provider, **{k: obj[k] for k in ("proposal_id", "reason", "next_action")}})
             except Exception as exc:
-                errors.append(f"vote {provider}: {type(exc).__name__}: {str(exc)[:150]}")
+                errors.append(f"vote {provider}: {safe_error(exc)}")
         if len(votes) < 2:
             raise RuntimeError("Moins de 2 votes valides")
         return {"votes": votes, "errors": errors}
@@ -174,21 +174,20 @@ Ne prétends pas que les données absentes ont été vérifiées."""
         try:
             result = self.graph().invoke({"run_id": run_id, "mission": self.settings.mission, "memory": self.context()})
             selection = result["decision"]
+            report_path = self.create_report(run_id, result)
             with self.sessions.begin() as db:
                 run = db.get(Run, run_id)
                 run.status = "completed"
                 run.finished_at = datetime.now(timezone.utc)
                 run.decision = selection["proposal"]["title"]
                 run.selection_info = json.dumps(selection, ensure_ascii=False)
+                run.report_path = str(report_path)
                 db.add(Task(run_id=run_id, category="validation", status="pending_review",
                             title=selection["proposal"]["experiment"],
                             description=f"Critère à mesurer : {selection['proposal']['success_metric']}"))
                 db.add(Task(run_id=run_id, category="prototype", status="pending_review",
                             title=f"Produire une maquette locale : {selection['proposal']['title']}",
                             description=selection["next_action"]))
-            report_path = self.create_report(run_id, result)
-            with self.sessions.begin() as db:
-                db.get(Run, run_id).report_path = str(report_path)
             return run_id, result
         except Exception:
             with self.sessions.begin() as db:
