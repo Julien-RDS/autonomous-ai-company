@@ -2,10 +2,23 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass
 
 from .database import Message
+
+
+logger = logging.getLogger(__name__)
+
+
+class ProviderError(RuntimeError):
+    """Public failure without SDK payloads, URLs or credentials."""
+
+
+def safe_error(exc: Exception) -> str:
+    # SDK exception text can contain request credentials or response bodies.
+    return type(exc).__name__
 
 
 @dataclass
@@ -80,7 +93,9 @@ class ProviderClient:
         if provider == "gemini":
             from google import genai
             from google.genai import types
-            with genai.Client(api_key=key) as client:
+            with genai.Client(api_key=key, http_options=types.HttpOptions(
+                timeout=45_000, retry_options=types.HttpRetryOptions(attempts=1),
+            )) as client:
                 response = client.models.generate_content(
                     model=model, contents=prompt,
                     config=types.GenerateContentConfig(
@@ -146,7 +161,9 @@ class AgentService:
             return result.text
         except Exception as exc:
             error = exc
-            raise
+            logger.warning("provider_call_failed provider=%s stage=%s run_id=%s error=%s",
+                           provider, stage, run_id, safe_error(exc))
+            raise ProviderError(f"Échec du fournisseur {provider} ({safe_error(exc)})") from None
         finally:
             latency = round((time.monotonic() - started) * 1000)
             if reservation:
@@ -158,7 +175,7 @@ class AgentService:
                 db.add(Message(
                     run_id=run_id, stage=stage, provider=provider,
                     model="simulation" if self.settings.mock else self.settings.models[provider],
-                    text=(result.text if result else f"Erreur {type(error).__name__}: {str(error)[:250]}")[:20000],
+                    text=(result.text if result else f"Erreur {safe_error(error)}")[:20000],
                     input_tokens=result.input_tokens if result else 0,
                     output_tokens=result.output_tokens if result else 0,
                     latency_ms=latency, success=(error is None),
