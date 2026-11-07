@@ -177,3 +177,8 @@ et l'expiration restent vérifiés lors de la validation SQL du résultat.
 | Checkpoints et approbations | Terminé pour cycle MOCK | workflow.py, approvals.py, worker.py | arrêt après proposition, reprise sans doublon, approbation idempotente | checkpoint et effet externe ne sont pas une transaction unique |
 | Crash et panne PostgreSQL | Terminé | tests/test_crash.py | 7 scénarios, arrêt de processus et du serveur | aucun service payant appelé |
 | CI et PR | Partiel | .github/workflows/tests.yml | mêmes commandes exécutées localement | résultat GitHub distant et création de PR à vérifier |
+
+Création de PR tentée avec `gh pr create --draft`, base `feat/lot-1-audit` :
+refus `Forbidden` de `https://api.github.com/graphql`. La branche est poussée,
+mais aucune PR n'est créée. Description prête dans `/workspace/lot-2-pr.md` ;
+restaurer l'accès API GitHub ou créer la PR de brouillon depuis la branche poussée.
