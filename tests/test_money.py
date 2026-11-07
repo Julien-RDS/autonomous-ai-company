@@ -62,3 +62,30 @@ def test_concurrent_budget_reservations(migrated_engine, monkeypatch):
     with ThreadPoolExecutor(2) as pool:
         assert sorted(pool.map(reserve,range(2)))==[False,True]
     assert budget.totals()==Decimal('0.08')
+
+
+def test_human_reconciliation_and_uncertain_settlement(migrated_engine,monkeypatch):
+    from company.database import AuditEvent
+    from sqlalchemy import select, func
+    monkeypatch.setenv('MOCK_MODE','true')
+    migrate(migrated_engine)
+    sessions=sessionmaker(migrated_engine,expire_on_commit=False)
+    budget=Budget(sessions,Settings.load())
+    with sessions.begin() as db:
+        run=Run(mode='mock',mission='review'); db.add(run); db.flush(); run_id=run.id
+    reservation=budget.reserve(run_id,'openai',Decimal('0.1'),operation_key='uncertain')
+    with pytest.raises(ValueError):
+        budget.reconcile_unknown(reservation,Decimal('0'),'invoice-1')
+    budget.settle(reservation,Decimal('0.01'),error=True)
+    assert budget.totals()==Decimal('0.1')
+    with pytest.raises(ValueError):
+        budget.reconcile_unknown(reservation,Decimal('0'),'')
+    budget.reconcile_unknown(reservation,Decimal('0.02'),'invoice-1')
+    budget.reconcile_unknown(reservation,Decimal('0.02'),'invoice-1')
+    assert budget.totals()==Decimal('0.02')
+    with sessions() as db:
+        assert db.scalar(select(func.count()).select_from(AuditEvent).where(AuditEvent.kind=='human_cost_reconciled'))==1
+    with pytest.raises(RuntimeError):
+        budget.reserve(run_id,'openai',Decimal('0.1'),operation_key='uncertain')
+    with pytest.raises(ValueError):
+        budget.reconcile_unknown(reservation,Decimal('0.01'),'different-invoice')

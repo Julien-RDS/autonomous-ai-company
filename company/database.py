@@ -64,6 +64,7 @@ class Ledger(Base):
     actual_eur: Mapped[Decimal | None] = mapped_column(Money(), nullable=True)
     currency: Mapped[str] = mapped_column(String(3), default="EUR", server_default="EUR")
     operation_key: Mapped[str | None] = mapped_column(String(200), unique=True, nullable=True)
+    reconciliation_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
     tariff_version: Mapped[str] = mapped_column(Text, default="legacy", server_default="legacy")
     state: Mapped[str] = mapped_column(String(20), default="reserved")
     details: Mapped[str] = mapped_column(String(250), default="")
@@ -82,6 +83,7 @@ class Task(Base):
     provider: Mapped[str | None] = mapped_column(String(20), nullable=True)
     success: Mapped[int | None] = mapped_column(Integer, nullable=True)
     value_eur: Mapped[Decimal] = mapped_column(Money(), default=Decimal(0))
+    artifact_manifest: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str] = mapped_column(Text, default="")
 
 
@@ -99,7 +101,9 @@ class WorkItem(Base):
     """Execution queue, distinct from human-facing prototype/validation tickets."""
     __tablename__ = "work_items"
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=new_id)
-    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), unique=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+    kind: Mapped[str] = mapped_column(String(20), default="workflow", server_default="workflow")
+    task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), unique=True, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(200), unique=True)
     state: Mapped[str] = mapped_column(String(30), default="PENDING", index=True)
     priority: Mapped[int] = mapped_column(Integer, default=0)
@@ -112,6 +116,7 @@ class WorkItem(Base):
     external: Mapped[bool] = mapped_column(default=False)
     __table_args__ = (
         CheckConstraint("state IN ('PENDING','RUNNING','SUCCEEDED','FAILED','RETRY_SCHEDULED','CANCELLED','WAITING_APPROVAL')", name="ck_work_state"),
+        CheckConstraint("(kind='workflow' AND task_id IS NULL) OR (kind='prototype' AND task_id IS NOT NULL)", name="ck_work_kind"),
         CheckConstraint("max_attempts > 0 AND attempts >= 0", name="ck_work_attempts"),
     )
 
@@ -154,10 +159,23 @@ def session_factory(db_url: str):
     from alembic import command
     from alembic.config import Config
     config = Config(str(Path(__file__).resolve().parent.parent / "alembic.ini"))
-    with engine.begin() as connection:
-        if engine.dialect.name == 'postgresql':
-            from sqlalchemy import text
-            connection.execute(text('SELECT pg_advisory_xact_lock(7109243)'))
-        config.attributes["connection"] = connection
-        command.upgrade(config, "head")
+    with engine.connect() as connection:
+        if engine.dialect.name == 'sqlite':
+            # SQLite batch migrations rebuild referenced tables. No writers may run
+            # during an upgrade; check every FK before committing the new schema.
+            connection.exec_driver_sql('PRAGMA foreign_keys=OFF')
+            connection.commit()
+        try:
+            with connection.begin():
+                if engine.dialect.name == 'postgresql':
+                    from sqlalchemy import text
+                    connection.execute(text('SELECT pg_advisory_xact_lock(7109243)'))
+                config.attributes["connection"] = connection
+                command.upgrade(config, "head")
+                if engine.dialect.name == 'sqlite' and connection.exec_driver_sql('PRAGMA foreign_key_check').first():
+                    raise RuntimeError('Migration interrompue: relations historiques invalides')
+        finally:
+            if engine.dialect.name == 'sqlite':
+                connection.exec_driver_sql('PRAGMA foreign_keys=ON')
+                connection.commit()
     return sessionmaker(bind=engine, expire_on_commit=False)

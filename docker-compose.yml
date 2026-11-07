@@ -41,9 +41,11 @@ services:
         condition: service_completed_successfully
     volumes:
       - company_reports:/app/reports
+      - company_artifacts:/app/artifacts
 volumes:
   postgres_data:
   company_reports:
+  company_artifacts:
 secrets:
   proxy_ca:
     file: ${BUILD_CA_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}

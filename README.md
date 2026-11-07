@@ -192,3 +192,10 @@ Le worker durable fonctionne en simulation. Démarrage : `docker compose up --bu
 après configuration de POSTGRES_PASSWORD dans `.env`.
 Les commandes, migrations, sauvegardes, tests de crash et limites sont détaillés
 dans [docs/LOT_2_PERSISTENCE.md](docs/LOT_2_PERSISTENCE.md).
+
+### Prototypes dans la file durable
+
+Après `python -m company approve IDENTIFIANT_TACHE_PROTOTYPE`, soumettre avec
+`python -m company.worker enqueue-prototype IDENTIFIANT_TACHE_PROTOTYPE`.
+Le worker MOCK reprend une génération interrompue et conserve les fichiers déjà
+publiés. Voir [la revue et les commandes de rapprochement des coûts](docs/REVIEW_AND_DURABLE_PROTOTYPES.md).

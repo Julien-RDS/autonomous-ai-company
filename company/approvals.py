@@ -14,7 +14,7 @@ def approve_task(sessions, task_id, actor='local-cli', checkpointer=None):
             existing=db.scalar(select(Approval).where(Approval.task_id==task_id))
             if existing:
                 return {'approved': True}
-            if task is None or task.status!='pending_review':
+            if task is None or task.status not in ('pending_review', 'approved'):
                 raise ValueError('Tâche inconnue ou déjà traitée')
             task.status='approved'
             db.add(Approval(task_id=task_id,actor=actor))
