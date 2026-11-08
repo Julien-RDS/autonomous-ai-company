@@ -16,6 +16,20 @@ from .routing import rank_providers
 from .workflow import Board
 
 
+def human_actor(explicit: str | None) -> str:
+    """Identity recorded with an approval; never a secret, bounded length."""
+    if explicit is None:
+        import getpass
+        try:
+            explicit = f"cli:{getpass.getuser()}"
+        except (KeyError, OSError):
+            explicit = "local-cli"
+    explicit = explicit.strip()
+    if not explicit or len(explicit) > 100 or not explicit.isprintable():
+        raise ValueError("--actor : identité lisible de 1 à 100 caractères requise")
+    return explicit
+
+
 def build():
     settings = Settings.load()
     sessions = session_factory(settings.db_url)
@@ -40,6 +54,7 @@ def main():
         sub.add_parser(action)
     p = sub.add_parser("approve", help="Approuver une tâche locale")
     p.add_argument("task_id")
+    p.add_argument("--actor", default=None, help="Identité humaine consignée (défaut : utilisateur système)")
     p = sub.add_parser("prototype", help="Générer le prototype d'une tâche approuvée (n'exécute pas le code)")
     p.add_argument("task_id")
     p = sub.add_parser("reconcile-cost", help="Consigner un coût inconnu vérifié par un humain")
@@ -75,9 +90,9 @@ def main():
             if sessions.kw['bind'].dialect.name == 'postgresql':
                 from .worker import checkpoints
                 with checkpoints(settings.db_url, f"approval:{args.task_id}") as saver:
-                    approve_task(sessions, args.task_id, checkpointer=saver)
+                    approve_task(sessions, args.task_id, actor=human_actor(args.actor), checkpointer=saver)
             else:
-                approve_task(sessions, args.task_id)
+                approve_task(sessions, args.task_id, actor=human_actor(args.actor))
             print("Tâche approuvée. Aucun outil externe n'a été lancé.")
         elif args.action == "prototype":
             provider, files = generate_prototype(sessions, settings, budget, args.task_id)

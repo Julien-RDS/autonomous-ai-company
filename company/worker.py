@@ -11,7 +11,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from .config import Settings
 from .database import session_factory
 from .budget import Budget
-from .queue import Queue, LostLease
+from .queue import Queue, LostLease, Busy
 from .workflow import Board
 
 @contextmanager
@@ -33,7 +33,7 @@ def checkpoints(url, thread_id=None):
                     'SELECT pg_try_advisory_lock(hashtextextended(%s, 7109245))', (thread_id,)
                 ).fetchone()['pg_try_advisory_lock']
                 if not locked:
-                    raise RuntimeError('Workflow encore détenu par un autre processus')
+                    raise Busy('Workflow encore détenu par un autre processus')
             yield saver
         finally:
             if locked:
@@ -70,6 +70,13 @@ def work_once(sessions, settings, owner):
         queue.finish(item.id,item.token)
     except LostLease:
         logging.warning('worker_lost_lease work_id=%s',item.id)
+    except Busy:
+        # A previous owner whose lease expired is still running: wait, do not fail.
+        logging.warning('worker_busy work_id=%s',item.id)
+        try:
+            queue.defer_busy(item.id,item.token)
+        except LostLease:
+            pass
     except Exception as exc:
         logging.warning('worker_failed work_id=%s error=%s',item.id,type(exc).__name__)
         try:

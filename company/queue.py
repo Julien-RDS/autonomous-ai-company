@@ -1,11 +1,20 @@
 """Durable at-least-once workflow delivery with fenced, expiring leases."""
 from datetime import timedelta, timezone
 import random
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from .database import WorkItem, Run, Attempt, AuditEvent, Task, Approval, utcnow, new_id
 
 class LostLease(RuntimeError):
     pass
+
+
+class Busy(RuntimeError):
+    """Resource still held by another live process: contention, not a failure."""
+
+
+# Contention never consumes max_attempts; it is bounded separately and then
+# handed to a human instead of being dead-lettered as a functional failure.
+MAX_BUSY_DEFERRALS = 10
 
 class Queue:
     def __init__(self, sessions, lease_seconds=120):
@@ -117,6 +126,25 @@ class Queue:
             attempt=db.get(Attempt,token); attempt.finished_at=utcnow(); attempt.outcome=item.state
             item.token=None; item.owner=None; item.lease_until=None
             db.add(AuditEvent(entity_id=item.id,kind=item.state.lower()))
+
+    def defer_busy(self, work_id, token):
+        """Give the item back without counting a failed attempt (old owner still alive)."""
+        with self.sessions.begin() as db:
+            item=self._owned(db,work_id,token)
+            busy=db.scalar(select(func.count()).select_from(Attempt).where(
+                Attempt.work_id==work_id, Attempt.outcome=='BUSY'))
+            now=utcnow()
+            attempt=db.get(Attempt,token); attempt.finished_at=now; attempt.outcome='BUSY'
+            item.attempts-=1
+            if busy+1>=MAX_BUSY_DEFERRALS:
+                item.state='WAITING_APPROVAL'
+                db.add(AuditEvent(entity_id=item.id,kind='busy_exhausted'))
+            else:
+                item.state='RETRY_SCHEDULED'
+                item.scheduled_at=now+timedelta(seconds=min(300,10*2**busy)+random.random())
+                db.add(AuditEvent(entity_id=item.id,kind='busy_deferred'))
+            item.token=None; item.owner=None; item.lease_until=None
+            return item.state
 
     def cancel(self, work_id):
         with self.sessions.begin() as db:
