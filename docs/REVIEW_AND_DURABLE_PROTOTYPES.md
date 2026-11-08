@@ -2,10 +2,11 @@
 
 ## Livraisons et accès GitHub
 
-Branches conservées sans fusion automatique :
-- Lot 1 : feat/lot-1-audit, base main.
-- Lot 2 : feat/lot-2-persistence-recovery, base feat/lot-1-audit.
-- Complément : feat/durable-prototypes, base feat/lot-2-persistence-recovery.
+État vérifié dans l'historique distant le 8 novembre 2026 :
+- Lot 1 intégré dans main par la PR #1 (merge 2105d2a).
+- Lot 2 intégré dans main par la PR #2 (merge fe5e1ab).
+- Complément : feat/durable-prototypes, désormais synchronisée avec main et à
+  proposer contre main. Ces fusions ont été constatées, pas exécutées par cette reprise.
 
 La lecture et l'écriture Git fonctionnent. L'API est bloquée avant authentification :
 CONNECT vers api.github.com retourne 403 du proxy Envoy ; le domaine est absent
@@ -13,7 +14,10 @@ de la liste réseau autorisée. Ajouter **api.github.com** aux paramètres rése
 de l'environnement en préservant les domaines existants. Les outils de lecture
 du brouillon ne permettent pas actuellement de vérifier cette configuration.
 Aucune clé GitHub supplémentaire n'a été demandée ou extraite.
-Après modification, retester l'API, créer les PR de brouillon et observer la CI.
+Après modification, retester l'API, créer la PR complémentaire et observer la CI.
+Les anciennes descriptions de livraison des Lots 1/2 sont historiques ; les commits
+de fusion confirment leur intégration sans établir le résultat de leurs checks CI.
+
 Ni PR ni CI distante ne sont déclarées réussies sans réponse GitHub.
 
 ## Revue ciblée et corrections
@@ -91,3 +95,15 @@ Cette revue ciblée ne constitue pas un audit de sécurité exhaustif.
   conteneur sans socket Docker ; il est couvert par le passage Python 3.12.
 - Dépendances, compilation et vérification du diff : réussies.
 - Ces validations locales ne prouvent pas que la CI GitHub distante est verte.
+
+## Correction supplémentaire après synchronisation
+
+Un montant juste inférieur à un milliard pouvait être arrondi à un milliard,
+valeur hors capacité de NUMERIC(18,9). La borne est désormais vérifiée aussi
+après arrondi, avant tout stockage. Les tests couvrent cette retenue et le plus
+grand montant représentable.
+
+Après synchronisation avec main le 8 novembre 2026 : **59 tests réussis,
+10 ignorés** sous Python 3.12 avec PostgreSQL réel (y compris arrêt/redémarrage).
+Compilation, contrôle des dépendances et diff validés. Les références Git des PR
+confirment #1 et #2 ; aucune référence de PR complémentaire n'est encore présente.

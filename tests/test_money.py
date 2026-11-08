@@ -89,3 +89,13 @@ def test_human_reconciliation_and_uncertain_settlement(migrated_engine,monkeypat
         budget.reserve(run_id,'openai',Decimal('0.1'),operation_key='uncertain')
     with pytest.raises(ValueError):
         budget.reconcile_unknown(reservation,Decimal('0.01'),'different-invoice')
+
+
+def test_rounding_cannot_overflow_numeric_storage():
+    with pytest.raises(ValueError,match='arrondi hors domaine'):
+        money('999999999.9999999995')
+
+
+def test_largest_representable_amount_is_preserved():
+    assert money('999999999.999999999') == Decimal('999999999.999999999')
+    assert money('999999999.9999999994') == Decimal('999999999.999999999')
