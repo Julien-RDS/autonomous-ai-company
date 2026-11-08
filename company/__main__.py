@@ -42,6 +42,10 @@ def main():
     p.add_argument("task_id")
     p = sub.add_parser("prototype", help="Générer le prototype d'une tâche approuvée (n'exécute pas le code)")
     p.add_argument("task_id")
+    p = sub.add_parser("reconcile-cost", help="Consigner un coût inconnu vérifié par un humain")
+    p.add_argument("ledger_id")
+    p.add_argument("--amount-eur", required=True, type=Decimal)
+    p.add_argument("--reference", required=True)
     p = sub.add_parser("measure", help="Consigner le résultat humain d'une expérimentation")
     p.add_argument("task_id")
     p.add_argument("--success", required=True, type=int, choices=(0, 1))
@@ -80,6 +84,9 @@ def main():
             print(f"Prototype écrit avec {provider} (code NON exécuté) :")
             for p in files:
                 print(f"- {p}")
+        elif args.action == "reconcile-cost":
+            budget.reconcile_unknown(args.ledger_id, args.amount_eur, args.reference)
+            print("Coût rapproché. Aucune opération externe n'a été relancée.")
         elif args.action == "measure":
             with sessions.begin() as db:
                 t = db.get(Task, args.task_id)

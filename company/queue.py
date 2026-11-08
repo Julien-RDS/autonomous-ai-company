@@ -2,7 +2,7 @@
 from datetime import timedelta, timezone
 import random
 from sqlalchemy import select, text
-from .database import WorkItem, Run, Attempt, AuditEvent, utcnow, new_id
+from .database import WorkItem, Run, Attempt, AuditEvent, Task, Approval, utcnow, new_id
 
 class LostLease(RuntimeError):
     pass
@@ -20,14 +20,14 @@ class Queue:
             db.execute(text('SELECT pg_advisory_xact_lock(7109242)'))
 
     def submit(self, key, mission, *, external=False, priority=0, scheduled_at=None, max_attempts=3):
-        if not key or len(key)>200 or max_attempts<1:
+        if not key or len(key)>200 or key.startswith('prototype:') or max_attempts<1:
             raise ValueError('Invalid submission')
         with self.sessions.begin() as db:
             self._lock(db, True)
             existing = db.scalar(select(WorkItem).where(WorkItem.idempotency_key == key))
             if existing:
                 run = db.get(Run, existing.run_id)
-                if run.mission != mission or existing.external != external:
+                if existing.kind != 'workflow' or run.mission != mission or existing.external != external:
                     raise ValueError('Idempotency key reused with different payload')
                 return existing.id
             run = Run(mission=mission, mode='real' if external else 'mock')
@@ -36,6 +36,27 @@ class Queue:
                             scheduled_at=scheduled_at or utcnow(),max_attempts=max_attempts)
             db.add(item); db.flush()
             db.add(AuditEvent(entity_id=item.id,kind='submitted'))
+            return item.id
+
+    def submit_prototype(self, task_id):
+        with self.sessions.begin() as db:
+            self._lock(db, True)
+            existing = db.scalar(select(WorkItem).where(WorkItem.task_id == task_id))
+            if existing:
+                return existing.id
+            task = db.scalar(select(Task).where(Task.id == task_id).with_for_update())
+            if task is None or task.category != 'prototype' or task.status != 'approved':
+                raise ValueError('Prototype approuvé requis')
+            if not db.scalar(select(Approval.id).where(Approval.task_id == task_id)):
+                raise ValueError('Validation humaine enregistrée requise')
+            run = db.get(Run, task.run_id)
+            if run.status != 'completed' or run.mode != 'mock':
+                raise ValueError('File de prototypes réservée aux réunions MOCK terminées')
+            item = WorkItem(run_id=run.id, task_id=task_id, kind='prototype',
+                            idempotency_key=f'prototype:{task_id}')
+            db.add(item)
+            db.flush()
+            db.add(AuditEvent(entity_id=item.id, kind='prototype_submitted'))
             return item.id
 
     def recover(self):

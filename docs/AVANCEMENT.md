@@ -53,3 +53,10 @@ checkpoints et crashs de processus testés avec PostgreSQL 16 réel.
 Démarrage Compose (migration puis worker) et workflow MOCK validés.
 Voir `LOT_2_PERSISTENCE.md` pour le protocole et les limites ; aucune API payante
 n'a été contactée. Le résultat de la CI distante n'est pas encore observé.
+
+## Complément après revue des Lots 1/2
+
+Les prototypes MOCK approuvés peuvent être soumis à la file durable : verrou
+commun avec la CLI, manifeste persistant et reprise après publication interrompue.
+Le rapprochement humain des coûts inconnus est disponible avec référence d'audit.
+Voir `REVIEW_AND_DURABLE_PROTOTYPES.md` pour les limites et le blocage réseau GitHub.

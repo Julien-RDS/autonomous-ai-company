@@ -6,7 +6,7 @@ from decimal import Decimal
 
 from sqlalchemy import func, select, text
 
-from .database import Ledger
+from .database import Ledger, AuditEvent
 from .money import money
 import json
 
@@ -79,7 +79,7 @@ class Budget:
                 raise ValueError("Réservation déjà régularisée")
             if actual is not None:
                 # Sur-facturation par rapport à la prévision possible : voir README.
-                item.amount_eur = money(actual)
+                item.amount_eur = max(item.amount_eur, money(actual)) if error else money(actual)
                 item.actual_eur = money(actual)
             item.state = "unknown" if error else "settled"
 
@@ -101,3 +101,26 @@ class Budget:
                 Ledger.state == "reserved", Ledger.created_at < before
             ).values(state="unknown"))
             return result.rowcount
+
+    def reconcile_unknown(self, ledger_id: str, amount: Decimal, reference: str, currency='EUR') -> None:
+        """Explicit human-confirmed charge. Never authorizes replay of the operation."""
+        amount = money(amount, currency)
+        if not reference.strip() or len(reference) > 500:
+            raise ValueError('Référence de rapprochement requise (500 caractères maximum)')
+        with self.sessions.begin() as db:
+            if db.get_bind().dialect.name == 'sqlite':
+                db.execute(text('BEGIN IMMEDIATE'))
+            else:
+                db.execute(text('SELECT pg_advisory_xact_lock(7109241)'))
+            item = db.scalar(select(Ledger).where(Ledger.id == ledger_id).with_for_update())
+            if item is None:
+                raise ValueError('Écriture inconnue')
+            if item.state == 'reconciled' and item.amount_eur == amount and item.reconciliation_reference == reference:
+                return
+            if item.state != 'unknown':
+                raise ValueError('Seuls les coûts inconnus peuvent être rapprochés')
+            item.amount_eur = amount
+            item.actual_eur = amount
+            item.state = 'reconciled'
+            item.reconciliation_reference = reference
+            db.add(AuditEvent(entity_id=item.id, kind='human_cost_reconciled'))

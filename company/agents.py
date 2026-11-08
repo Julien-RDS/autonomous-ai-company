@@ -182,7 +182,7 @@ class AgentService:
                 db.add(Message(
                     run_id=run_id, stage=stage, provider=provider,
                     model="simulation" if self.settings.mock else self.settings.models[provider],
-                    text=(result.text if result else f"Erreur {safe_error(error)}")[:20000],
+                    text=(result.text if result else f"Erreur {safe_error(error)}"),
                     input_tokens=result.input_tokens if result else 0,
                     output_tokens=result.output_tokens if result else 0,
                     latency_ms=latency, success=(error is None),

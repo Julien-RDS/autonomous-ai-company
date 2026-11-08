@@ -57,9 +57,14 @@ def work_once(sessions, settings, owner):
                 lost.set(); return
     thread=threading.Thread(target=heartbeat,daemon=True); thread.start()
     try:
-        with checkpoints(settings.db_url, item.run_id) as saver:
-            Board(sessions,settings,Budget(sessions,settings)).run_once(
-                item.run_id,saver,lease=(item.id,item.token))
+        if item.kind == 'prototype':
+            from .prototyping import generate_prototype
+            generate_prototype(sessions, settings, Budget(sessions, settings), item.task_id,
+                               lease=(item.id, item.token))
+        else:
+            with checkpoints(settings.db_url, item.run_id) as saver:
+                Board(sessions,settings,Budget(sessions,settings)).run_once(
+                    item.run_id,saver,lease=(item.id,item.token))
         if lost.is_set():
             raise LostLease('Heartbeat perdu')
         queue.finish(item.id,item.token)
@@ -80,6 +85,7 @@ def main():
     parser=argparse.ArgumentParser()
     sub=parser.add_subparsers(dest='action',required=True)
     enqueue=sub.add_parser('enqueue'); enqueue.add_argument('key')
+    prototype=sub.add_parser('enqueue-prototype'); prototype.add_argument('task_id')
     worker=sub.add_parser('run'); worker.add_argument('--once',action='store_true')
     worker.add_argument('--owner',default='local-worker')
     args=parser.parse_args()
@@ -89,6 +95,8 @@ def main():
     sessions=session_factory(settings.db_url)
     if args.action=='enqueue':
         print(Queue(sessions).submit(args.key,settings.mission))
+    elif args.action=='enqueue-prototype':
+        print(Queue(sessions).submit_prototype(args.task_id))
     else:
         failures = 0
         while True:

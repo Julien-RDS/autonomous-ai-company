@@ -53,3 +53,20 @@ def test_adopt_historical_database_preserves_rows(migrated_engine):
         from sqlalchemy import select
         from decimal import Decimal
         assert c.scalar(select(Ledger.amount_eur).where(Ledger.id=='old')) == Decimal('0.123456789')
+
+
+def test_populated_sqlite_upgrade_with_foreign_keys(tmp_path):
+    from company.database import session_factory
+    url=f'sqlite:///{tmp_path}/populated.db'
+    engine=create_engine(url)
+    migrate(engine,'c7f86b8b3fbe')
+    with engine.begin() as c:
+        c.execute(text("INSERT INTO runs(id,started_at,status,mode,mission) VALUES('r',CURRENT_TIMESTAMP,'running','mock','upgrade')"))
+        c.execute(text("INSERT INTO work_items(id,run_id,idempotency_key,state,priority,scheduled_at,attempts,max_attempts,external) VALUES('w','r','k','RUNNING',0,CURRENT_TIMESTAMP,1,3,false)"))
+        c.execute(text("INSERT INTO task_attempts(id,work_id,owner,started_at,outcome) VALUES('a','w','worker',CURRENT_TIMESTAMP,'RUNNING')"))
+    engine.dispose()
+    sessions=session_factory(url)
+    with sessions() as db:
+        assert db.scalar(text("SELECT work_id FROM task_attempts WHERE id='a'"))=='w'
+        assert db.scalar(text('PRAGMA foreign_keys'))==1
+        assert not db.execute(text('PRAGMA foreign_key_check')).all()

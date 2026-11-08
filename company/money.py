@@ -12,7 +12,10 @@ def money(value, currency='EUR') -> Decimal:
     value = Decimal(str(value))
     if not value.is_finite() or value < 0 or value >= Decimal('1000000000'):
         raise ValueError('Montant hors domaine EUR')
-    return value.quantize(SCALE, rounding=ROUND_HALF_UP)
+    rounded = value.quantize(SCALE, rounding=ROUND_HALF_UP)
+    if rounded >= Decimal('1000000000'):
+        raise ValueError('Montant arrondi hors domaine NUMERIC(18,9)')
+    return rounded
 
 class Money(TypeDecorator):
     impl = Numeric(18, 9)
