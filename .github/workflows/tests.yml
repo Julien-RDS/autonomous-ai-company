@@ -24,6 +24,7 @@ jobs:
           --health-cmd "pg_isready -U company -d company_test"
           --health-interval 5s --health-timeout 5s --health-retries 10
     strategy:
+      fail-fast: false
       matrix:
         python-version: ['3.11', '3.12']
     steps:
@@ -52,11 +53,13 @@ jobs:
           DATABASE_URL: sqlite:////tmp/sandbox-diagnostics.db
         run: |
           docker info --format 'cgroup v{{.CgroupVersion}} driver={{.CgroupDriver}} mem={{.MemoryLimit}} swap={{.SwapLimit}} pids={{.PidsLimit}} cfs={{.CPUCfsQuota}}' || true
-          python -m company sandbox probe --image-id "$(docker image inspect --format '{{.Id}}' "$SANDBOX_TEST_IMAGE")" || true
+          python -m company sandbox probe --image-id "$(docker image inspect --format '{{.Id}}' "$SANDBOX_TEST_IMAGE")" > /tmp/sandbox-probe.txt 2>&1 || true
+          cat /tmp/sandbox-probe.txt
+          python .github/scripts/ci_annotations.py /tmp/sandbox-probe.txt
       - name: Test offline simulation
         env:
           MOCK_MODE: 'true'
           TEST_DATABASE_URL: postgresql+psycopg://company:ci-ephemeral-only@127.0.0.1:5432/company_test
           TEST_PG_CONTAINER: ${{ job.services.postgres.id }}
           TEST_SANDBOX_IMAGE: ${{ env.SANDBOX_TEST_IMAGE }}
-        run: python -m pytest -q -rfEs --tb=short
+        run: PYTHONPATH=.github/scripts python -m pytest -q -rfEs --tb=short -p ci_annotations
