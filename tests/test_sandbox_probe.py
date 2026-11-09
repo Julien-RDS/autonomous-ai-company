@@ -59,3 +59,13 @@ def test_probe_refuses_unlimited_v2_and_reports_observed_values():
 def test_probe_without_cgroup_files_refuses():
     observed = run_probe({})
     assert {"mémoire", "swap", "processus", "CPU"} <= set(sandbox.limits_mismatch(observed, sandbox.DEFAULT_LIMITS))
+
+
+def test_failed_create_does_not_remove_an_existing_probe(tmp_path, monkeypatch):
+    import subprocess
+    removed=[]
+    monkeypatch.setattr(sandbox,'_docker',lambda *a,**k: subprocess.CompletedProcess(a,1,b'',b'name already exists'))
+    monkeypatch.setattr(sandbox,'_remove',lambda *a:removed.append(a))
+    problems=sandbox.probe_enforcement('docker',tmp_path,'sha256:'+'a'*64,sandbox.DEFAULT_LIMITS,'b'*32)
+    assert problems==['conteneur de vérification non créé']
+    assert removed==[]

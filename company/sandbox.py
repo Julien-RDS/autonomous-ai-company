@@ -359,11 +359,13 @@ def probe_enforcement(docker: str, workspace: Path, image_id: str, limits: Limit
     """Run a fixed application probe with the SAME options and read the effective limits."""
     name = f"{NAME_PREFIX}{run_id}-probe"
     deadline = int(time.time()) + 30 + CLEANUP_GRACE_S
+    owned = False
     try:
         created = _docker(docker, *docker_create_argv(docker, name, workspace, PROBE_PROFILE, image_id,
                                                       limits, deadline)[1:])
         if created.returncode != 0:
             return ["conteneur de vérification non créé"]
+        owned = True
         started = _docker(docker, "start", "--attach", name, timeout=30)
         if started.returncode != 0:
             return ["vérification des limites impossible"]
@@ -376,7 +378,8 @@ def probe_enforcement(docker: str, workspace: Path, image_id: str, limits: Limit
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
         return ["vérification des limites impossible"]
     finally:
-        _remove(docker, name)
+        if owned:
+            _remove(docker, name)
 
 
 def check_limits(image_id: str, limits: Limits = DEFAULT_LIMITS) -> dict:
