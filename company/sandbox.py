@@ -28,14 +28,15 @@ import subprocess
 import tempfile
 import threading
 import time
-from dataclasses import dataclass, field
+from contextlib import contextmanager
+from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import func, select, text
 
 from . import prototyping
-from .database import Approval, AuditEvent, ExecutionApproval, SandboxCleanup, SandboxRun, Task, new_id, utcnow
+from .database import Approval, AuditEvent, ExecutionApproval, SandboxCleanup, SandboxRun, SandboxEvidence, Task, new_id, utcnow
 from .prototyping import safe_files
 
 IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -58,17 +59,14 @@ PROFILES = {
         name="python-unittest",
         # -I: isolated mode (ignores PYTHON* variables and user site); -B: no .pyc
         # on the read-only workspace. unittest discovery imports test_*.py files.
-        argv=("python", "-I", "-B", "-c",
-              "import sys, unittest; s=unittest.defaultTestLoader.discover('/workspace',pattern='test_*.py',top_level_dir='/workspace'); "
-              "n=s.countTestCases(); print('Discovered tests:', n); "
-              "sys.exit(2) if n == 0 else sys.exit(not unittest.TextTestRunner(verbosity=2).run(s).wasSuccessful())"),
+        argv=('python','-I','-B','-c',Path(__file__).with_name('unittest_runner.py').read_text(encoding='utf-8')),
         env=(("HOME", "/tmp"), ("PYTHONDONTWRITEBYTECODE", "1"), ("LANG", "C.UTF-8")),
     ),
 }
 
 PROFILES['static-html'] = Profile(
     name='static-html', argv=('python','-I','-B','-c',
-        Path(__file__).with_name('static_validation.py').read_text(encoding='utf-8')),
+        Path(__file__).with_name('static_validation.py').read_text(encoding='utf-8')+"\nimport sys\nprint('AAC_RESULT_V1:{\"kind\":\"static\",\"structure_valid\":true}',file=sys.stderr)\n"),
     env=PROFILES['python-unittest'].env,
 )
 
@@ -324,11 +322,13 @@ def probe_enforcement(docker: str, workspace: Path, image_id: str, limits: Limit
     """Run a fixed application probe with the SAME options and read the effective limits."""
     name = f"{NAME_PREFIX}{run_id}-probe"
     deadline = int(time.time()) + 30 + CLEANUP_GRACE_S
+    owned = False
     try:
         created = _docker(docker, *docker_create_argv(docker, name, workspace, PROBE_PROFILE, image_id,
                                                       limits, deadline)[1:])
         if created.returncode != 0:
             return ["conteneur de vérification non créé"]
+        owned = True
         started = _docker(docker, "start", "--attach", name, timeout=30)
         if started.returncode != 0:
             return ["vérification des limites impossible"]
@@ -336,7 +336,15 @@ def probe_enforcement(docker: str, workspace: Path, image_id: str, limits: Limit
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
         return ["vérification des limites impossible"]
     finally:
-        _remove(docker, name)
+        if owned:
+            _remove(docker, name)
+
+
+def execution_verdict(exit_code, stderr, profile, *, truncated=False):
+    from .sandbox_summary import parse_summary
+    if exit_code != 0:
+        return 'FAILED'
+    return 'PASSED' if parse_summary(stderr,profile,truncated=truncated) is not None else 'ERROR'
 
 
 def display_safe(text: str) -> str:
@@ -345,7 +353,37 @@ def display_safe(text: str) -> str:
                    else f"\\x{ord(c):02x}" if ord(c) < 256 else f"\\u{ord(c):04x}" for c in text)
 
 
-def execute(files: list[dict], profile_name: str, image_id: str, *, run_id: str | None = None,
+@contextmanager
+def lifecycle_lock(run_id):
+    """One supervisor host per Docker daemon; kernel releases locks on parent death."""
+    import fcntl
+    directory=Path(tempfile.gettempdir()) / f'aac-lifecycle-{os.geteuid()}'
+    directory.mkdir(mode=0o700, exist_ok=True)
+    info=directory.lstat()
+    if directory.is_symlink() or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise SandboxRefused('Répertoire des verrous non sûr')
+    key=hashlib.sha256((str(workspace_base())+':'+run_id).encode()).hexdigest()
+    fd=os.open(directory/key,os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,'a') as lock:
+        try:
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SandboxRefused('Superviseur encore actif : nettoyage ou exécution concurrente refusé') from None
+        try:
+            yield
+        finally:
+            fcntl.flock(lock,fcntl.LOCK_UN)
+
+
+def execute(files, profile_name, image_id, *, run_id=None, **kwargs):
+    run_id=run_id or new_id()
+    if not re.fullmatch(r'[0-9a-f]{32}',run_id):
+        raise SandboxRefused('Identifiant invalide')
+    with lifecycle_lock(run_id):
+        return _execute(files,profile_name,image_id,run_id=run_id,**kwargs)
+
+
+def _execute(files: list[dict], profile_name: str, image_id: str, *, run_id: str | None = None,
             limits: Limits = DEFAULT_LIMITS, on_started=None) -> SandboxResult:
     """Run the profile's fixed command against `files` inside a disposable container."""
     profile = PROFILES.get(profile_name)
@@ -437,14 +475,21 @@ def execute(files: list[dict], profile_name: str, image_id: str, *, run_id: str 
             return result("OOM", exit_code, "limite mémoire atteinte")
         if exit_code is None:
             return result("ERROR", None, "état du conteneur indisponible")
-        return result("PASSED" if exit_code == 0 else "FAILED", exit_code)
+        verdict=execution_verdict(exit_code,sinks[1].text(),profile_name,
+                                  truncated=any(s.seen>len(s.data) for s in sinks))
+        return result(verdict,exit_code,'résumé absent ou invalide' if verdict=='ERROR' else '')
     except (OSError, subprocess.SubprocessError) as exc:
         return result("ERROR", None, f"erreur d'exécution Docker ({type(exc).__name__})")
     finally:
         if container_created:
             _remove(docker, name)
         if workspace_created and workspace.exists():
-            _discard_workspace(workspace)
+            try:
+                remaining=_containers(docker)
+                if name not in remaining and name+'-probe' not in remaining:
+                    _discard_workspace(workspace)
+            except (SandboxError, OSError, subprocess.SubprocessError):
+                pass  # Unknown daemon state: preserve files for audited recovery.
 
 
 # --------------------------------------------------------------------------
@@ -467,6 +512,10 @@ def _generated_manifest(db, task_id: str) -> list[dict]:
     if task.status not in ("awaiting_evaluation", "completed") or not task.artifact_manifest:
         raise SandboxRefused("Prototype non généré : rien à tester")
     return json.loads(task.artifact_manifest)["files"]
+
+
+def validator_version(profile):
+    return hashlib.sha256(json.dumps(PROFILES[profile].argv).encode()).hexdigest()
 
 
 def approve_execution(sessions, task_id: str, *, profile: str, image_id: str, actor: str, reason: str) -> str:
@@ -493,7 +542,7 @@ def approve_execution(sessions, task_id: str, *, profile: str, image_id: str, ac
             raise SandboxRefused("Fichiers sur disque différents du contenu qui serait exécuté : "
                                  "relecture invalide, aucune autorisation") from None
         digest = manifest_digest(files)
-        approval = ExecutionApproval(task_id=task_id, manifest_sha256=digest, profile=profile,
+        approval = ExecutionApproval(validator_version=validator_version(profile),task_id=task_id, manifest_sha256=digest, profile=profile,
                                      image_id=image_id, actor=actor, reason=reason)
         db.add(approval)
         db.flush()
@@ -531,14 +580,18 @@ def run_approved(sessions, task_id: str, *, images: dict[str, str] | None = None
         ).order_by(ExecutionApproval.created_at, ExecutionApproval.id)).all()
         if not candidates:
             raise SandboxRefused("Aucune autorisation d'exécution disponible pour cette tâche")
-        approval = next((a for a in candidates if a.manifest_sha256 == digest), None)
+        matching=[a for a in candidates if a.manifest_sha256 == digest]
+        approval=next((a for a in matching if a.profile in PROFILES and
+                       a.validator_version == validator_version(a.profile)), matching[0] if matching else None)
         if approval is None:
             raise SandboxRefused("Le contenu a changé depuis l'autorisation : nouvelle approbation requise")
         if images.get(approval.profile) != approval.image_id:
             raise SandboxRefused("Image autorisée différente de la configuration courante : aucune exécution")
+        if approval.profile not in PROFILES or approval.validator_version != validator_version(approval.profile):
+            raise SandboxRefused('Validateur modifié ou historique : nouvelle approbation requise')
         approval.consumed_at = utcnow()
         attempt = (db.scalar(select(func.max(SandboxRun.attempt)).where(SandboxRun.task_id == task_id)) or 0) + 1
-        run = SandboxRun(id=run_id, task_id=task_id, approval_id=approval.id, attempt=attempt,
+        run = SandboxRun(validator_version=validator_version(approval.profile),id=run_id, task_id=task_id, approval_id=approval.id, attempt=attempt,
                          profile=approval.profile, image_id=approval.image_id, manifest_sha256=digest,
                          container_name=NAME_PREFIX + run_id, timeout_s=limits.timeout_s, state="RUNNING",
                          stdout="", stderr="", output_bytes=0, truncated=False, detail="")
@@ -552,7 +605,21 @@ def run_approved(sessions, task_id: str, *, images: dict[str, str] | None = None
     except Exception as exc:  # recorded, never retried: the approval stays consumed
         outcome = SandboxResult("ERROR", None, 0, "", "", 0, False, f"erreur interne ({type(exc).__name__})")
     with sessions.begin() as db:
-        run = db.get(SandboxRun, run_id)
+        if db.get_bind().dialect.name == 'sqlite':
+            db.execute(text('BEGIN IMMEDIATE'))
+        run = db.scalar(select(SandboxRun).where(SandboxRun.id == run_id).with_for_update())
+        from .sandbox_summary import parse_summary
+        summary=parse_summary(outcome.stderr,profile,truncated=outcome.truncated)
+        evidence=db.scalar(select(SandboxEvidence).where(SandboxEvidence.run_id==run_id))
+        if evidence is not None:
+            db.expunge(run)
+            return run
+        # The immutable envelope is bounded and retained even when cleanup wins the race.
+        envelope=asdict(outcome)
+        envelope['stdout']=outcome.stdout[:65536]; envelope['stderr']=outcome.stderr[:65536]
+        envelope['detail']=outcome.detail[:250]
+        db.add(SandboxEvidence(run_id=run_id,outcome_json=json.dumps(envelope,ensure_ascii=True)))
+        run.summary_json=json.dumps(summary) if summary is not None else None
         if run.state == "RUNNING":
             run.state, run.exit_code = outcome.state, outcome.exit_code
             run.duration_ms, run.output_bytes, run.truncated = outcome.duration_ms, outcome.output_bytes, outcome.truncated
@@ -564,7 +631,8 @@ def run_approved(sessions, task_id: str, *, images: dict[str, str] | None = None
             run.exit_code = outcome.exit_code if run.exit_code is None else run.exit_code
             run.duration_ms = outcome.duration_ms if run.duration_ms is None else run.duration_ms
             run.output_bytes, run.truncated = outcome.output_bytes, outcome.truncated
-            run.stdout, run.stderr = outcome.stdout, outcome.stderr
+            run.stdout = run.stdout or outcome.stdout
+            run.stderr = run.stderr or outcome.stderr
             run.detail = f"{run.detail[:120]} | résultat tardif : {outcome.state} {outcome.detail}"[:250]
             db.add(AuditEvent(entity_id=run_id, kind="sandbox_late_result"))
         db.flush()
@@ -580,6 +648,7 @@ def _record_cleanup(db, *, run_id, container, actor, reason, previous, outcome, 
     db.add(entry)
     db.flush()
     db.add(AuditEvent(entity_id=run_id or entry.id, kind=f"sandbox_cleanup_{outcome}"[:40]))
+    return entry.id
 
 
 def _containers(docker: str) -> dict[str, dict]:
@@ -604,49 +673,59 @@ def _run_of(container: str) -> str | None:
     return core if re.fullmatch(r"[0-9a-f]{32}", core) else None
 
 
-def cleanup(sessions=None, *, force: bool = False, now: float | None = None,
-            actor: str = "cli:cleanup", reason: str = "nettoyage des orphelins échus") -> dict:
-    """Remove leftover labelled containers/workspaces; mark stale RUNNING records INTERRUPTED.
-
-    Without `force`, only containers past their deadline label are removed. `force`
-    removes every sandbox container: use only when no sandbox run is in progress.
-    Never consumes an approval and never starts a test. Each action is audited.
-    """
-    docker, now = docker_binary(), time.time() if now is None else now
-    removed = []
-    for name, info in _containers(docker).items():
-        if force or info["deadline"] is None or info["deadline"] <= now:
-            _remove(docker, name)
-            removed.append(name)
-    interrupted, records = [], []
+def cleanup(sessions=None, *, force=False, now=None, actor='cli:cleanup',
+            reason='nettoyage des orphelins échus'):
+    docker= docker_binary()
+    now=time.time() if now is None else now
+    listing=_containers(docker)
+    removed=[]; interrupted=[]
+    known=set()
     if sessions is not None:
-        moment = datetime.fromtimestamp(now, timezone.utc)
-        with sessions.begin() as db:
-            for run in db.scalars(select(SandboxRun).where(SandboxRun.state == "RUNNING")).all():
-                started = run.started_at.replace(tzinfo=timezone.utc) if run.started_at.tzinfo is None else run.started_at
-                if force or started + timedelta(seconds=run.timeout_s + CLEANUP_GRACE_S) <= moment:
-                    run.state, run.finished_at = "INTERRUPTED", utcnow()
-                    run.detail = "exécution interrompue : approbation consommée, non rejouée"
-                    db.add(AuditEvent(entity_id=run.id, kind="sandbox_interrupted"))
-                    interrupted.append(run.id)
-            known = set(db.scalars(select(SandboxRun.id)).all())
-            for name in removed:
-                records.append((name, _run_of(name)))
-            for run_id in interrupted:
-                if run_id not in {r for _, r in records}:
-                    records.append((NAME_PREFIX + run_id, run_id))
-            for name, run_id in records:
-                _record_cleanup(db, run_id=run_id if run_id in known else None, container=name, actor=actor,
-                                reason=reason, previous="RUNNING" if run_id in interrupted else None,
-                                outcome="interrupted" if run_id in interrupted else "container_removed",
-                                container_removed=name in removed, workspace_removed=False)
-    base = secure_base(create=False)
-    if base is not None:
-        stale = {_run_of(name) for name in removed} | set(interrupted)
-        for path in base.iterdir():
-            if force or path.name in stale:
-                _discard_workspace(path)
-    return {"containers_removed": removed, "runs_interrupted": interrupted}
+        base=secure_base(create=False)
+        workspaces={p.name for p in base.iterdir()} if base is not None else set()
+        with sessions() as db:
+            known=set(db.scalars(select(SandboxRun.id)).all())
+            rows=db.scalars(select(SandboxRun).where(
+                (SandboxRun.state=='RUNNING') | SandboxRun.container_name.in_(listing) |
+                SandboxRun.id.in_(workspaces))).all()
+        for run in rows:
+            started=run.started_at.replace(tzinfo=timezone.utc)
+            due=started.timestamp()+run.timeout_s+CLEANUP_GRACE_S <= now
+            if not force and not due:
+                continue
+            try:
+                report=cleanup_run(sessions,run.id,actor=actor,reason=reason,now=now,force=force)
+            except SandboxRefused:
+                continue
+            removed.extend(report['containers_removed'])
+            if report['outcome']=='interrupted': interrupted.append(run.id)
+    for name,info in listing.items():
+        run_id=_run_of(name)
+        if run_id is None or run_id in known or (not force and (info['deadline'] is None or info['deadline']>now)):
+            continue
+        try:
+            with lifecycle_lock(run_id):
+                intent_id=None
+                if sessions is not None:
+                    with sessions.begin() as db:
+                        intent_id=_record_cleanup(db,run_id=None,container=name,actor=actor,reason=reason,
+                            previous=None,outcome='started',container_removed=False,workspace_removed=False)
+                _remove(docker,name)
+                # Unknown state or remaining probe means files are never deleted.
+                still=_containers(docker)
+                if name not in still: removed.append(name)
+                if not any(_run_of(n)==run_id for n in still):
+                    base=secure_base(create=False)
+                    if base is not None: _discard_workspace(base/run_id)
+                if intent_id is not None:
+                    with sessions.begin() as db:
+                        entry=db.get(SandboxCleanup,intent_id)
+                        entry.container_removed=name not in still
+                        entry.outcome='container_removed' if name not in still else 'cleanup_failed'
+                        db.add(AuditEvent(entity_id=entry.id,kind='sandbox_cleanup_'+entry.outcome))
+        except (SandboxRefused,SandboxError,OSError,subprocess.SubprocessError):
+            continue
+    return {'containers_removed':removed,'runs_interrupted':interrupted}
 
 
 def diagnose(sessions, *, now: float | None = None) -> dict:
@@ -679,7 +758,7 @@ def diagnose(sessions, *, now: float | None = None) -> dict:
     return {"capabilities": caps, "running": runs, "unknown_containers": unknown}
 
 
-def cleanup_run(sessions, run_id: str, *, actor: str, reason: str, now: float | None = None) -> dict:
+def _cleanup_run(sessions, run_id: str, *, actor: str, reason: str, now: float | None = None, force: bool = False) -> dict:
     """Targeted cleanup of ONE run: its container(s) and workspace only. Audited, never re-executes."""
     if not re.fullmatch(r"[0-9a-f]{32}", run_id or ""):
         raise SandboxRefused("Identifiant d'exécution invalide")
@@ -698,8 +777,13 @@ def cleanup_run(sessions, run_id: str, *, actor: str, reason: str, now: float | 
     containers = {n: c for n, c in _containers(docker).items() if n in names}
     active = [n for n, c in containers.items()
               if c["state"] in LIVE_STATES and (c["deadline"] is None or c["deadline"] > now)]
+    with sessions() as db:
+        current=db.get(SandboxRun,run_id)
+        before_deadline=(current.started_at.replace(tzinfo=timezone.utc).timestamp()+current.timeout_s+CLEANUP_GRACE_S)>now
+        if current.state=='RUNNING' and before_deadline and not containers:
+            active.append('supervisor-starting')
     with sessions.begin() as db:
-        if active:
+        if active and not force:
             _record_cleanup(db, run_id=run_id, container=names[0], actor=actor, reason=reason,
                             previous=previous, outcome="refused_active", container_removed=False,
                             workspace_removed=False)
@@ -708,23 +792,42 @@ def cleanup_run(sessions, run_id: str, *, actor: str, reason: str, now: float | 
             refused = False
     if refused:
         raise SandboxRefused("Conteneur encore actif avant échéance : nettoyage refusé, réessayer après l'échéance")
-    for name in containers:
-        _remove(docker, name)
-    still = set(_containers(docker)) & set(names)
-    workspace_removed = False
-    base = secure_base(create=False)
-    if base is not None and (base / run_id).exists():
-        _discard_workspace(base / run_id)
-        workspace_removed = not (base / run_id).exists()
+    # Persist intent before touching Docker; a process crash leaves a visible pending action.
     with sessions.begin() as db:
-        run = db.get(SandboxRun, run_id)
-        if run.state == "RUNNING":
-            run.state, run.finished_at = "INTERRUPTED", utcnow()
-            run.detail = "nettoyage ciblé : approbation consommée, aucune relance"
-        outcome = ("cleanup_failed" if still else "interrupted" if previous == "RUNNING"
-                   else "cleaned" if containers or workspace_removed else "nothing_to_clean")
-        _record_cleanup(db, run_id=run_id, container=names[0], actor=actor, reason=reason, previous=previous,
-                        outcome=outcome, container_removed=bool(containers) and not still,
-                        workspace_removed=workspace_removed)
-    return {"run_id": run_id, "previous_state": previous, "outcome": outcome,
-            "containers_removed": sorted(set(containers) - still), "workspace_removed": workspace_removed}
+        intent_id=_record_cleanup(db,run_id=run_id,container=names[0],actor=actor,reason=reason,
+                                  previous=previous,outcome='started',container_removed=False,workspace_removed=False)
+    try:
+        for name in containers:
+            _remove(docker,name)
+        still = set(_containers(docker)) & set(names)
+    except (SandboxError,OSError,subprocess.SubprocessError):
+        still=set(names)  # Unknown is never interpreted as absent.
+    workspace_removed=False
+    base=secure_base(create=False)
+    if not still and base is not None and (base/run_id).exists():
+        _discard_workspace(base/run_id)
+        workspace_removed=not (base/run_id).exists()
+    files_left=base is not None and (base/run_id).exists()
+    with sessions.begin() as db:
+        if db.get_bind().dialect.name == 'sqlite':
+            db.execute(text('BEGIN IMMEDIATE'))
+        run=db.scalar(select(SandboxRun).where(SandboxRun.id==run_id).with_for_update())
+        outcome=('cleanup_failed' if still or files_left else 'interrupted' if run.state=='RUNNING'
+                 else 'cleaned' if containers or workspace_removed else 'nothing_to_clean')
+        if not still and not files_left and run.state=='RUNNING':
+            run.state='INTERRUPTED'; run.finished_at=utcnow()
+            run.detail='nettoyage ciblé confirmé; aucune relance'
+        intent=db.get(SandboxCleanup,intent_id)
+        intent.outcome=outcome
+        intent.container_removed=bool(containers) and not still
+        intent.workspace_removed=workspace_removed
+        db.add(AuditEvent(entity_id=run_id,kind=f'sandbox_cleanup_{outcome}'))
+    return {'run_id':run_id,'previous_state':previous,'outcome':outcome,
+            'containers_removed':sorted(set(containers)-still),'workspace_removed':workspace_removed}
+
+
+def cleanup_run(sessions,run_id,**kwargs):
+    if not re.fullmatch(r'[0-9a-f]{32}',run_id or ''):
+        raise SandboxRefused('Identifiant invalide')
+    with lifecycle_lock(run_id):
+        return _cleanup_run(sessions,run_id,**kwargs)

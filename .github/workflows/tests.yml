@@ -1,7 +1,7 @@
 name: Tests
 on:
   push:
-    branches: [main, dev, feat/lot-3-sandbox]
+    branches: [main, dev, feat/lot-3-sandbox, feat/sandbox-results-recovery]
   pull_request:
 permissions:
   contents: read

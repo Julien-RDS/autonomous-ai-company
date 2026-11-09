@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from html import escape
+import json
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
@@ -35,7 +36,9 @@ def create_app(sessions, settings, budget) -> FastAPI:
         with sessions() as db:
             rows=db.scalars(select(SandboxRun).order_by(SandboxRun.started_at.desc()).limit(50)).all()
         return [{'id':r.id,'task_id':r.task_id,'attempt':r.attempt,'state':r.state,
-                 'profile':r.profile,'exit_code':r.exit_code,'duration_ms':r.duration_ms,
+                 'profile':r.profile,'validator_version':r.validator_version,
+                 'manifest_sha256':r.manifest_sha256,'summary':json.loads(r.summary_json) if r.summary_json else None,
+                 'exit_code':r.exit_code,'duration_ms':r.duration_ms,
                  'started_at':r.started_at.isoformat(),'image_id':r.image_id} for r in rows]
 
     @app.get("/", response_class=HTMLResponse)
@@ -49,9 +52,10 @@ def create_app(sessions, settings, budget) -> FastAPI:
         isolated = "".join(
             f"<tr><td>{escape(r['task_id'])}</td><td>{r['attempt']}</td>"
             f"<td>{escape(r['profile'])}</td><td>{escape(r['state'])}</td>"
-            f"<td>{r['duration_ms'] if r['duration_ms'] is not None else '—'}</td></tr>"
+            f"<td>{r['duration_ms'] if r['duration_ms'] is not None else '—'}</td>"
+            f"<td>{escape(json.dumps(r['summary'],ensure_ascii=False)) if r['summary'] else 'Indisponible'}</td></tr>"
             for r in sandbox_runs()
-        ) or "<tr><td colspan='5'>Aucune exécution isolée.</td></tr>"
+        ) or "<tr><td colspan='6'>Aucune exécution isolée.</td></tr>"
         tasks = "".join(
             f"<tr><td><code>{escape(t['id'][:10])}</code></td><td>{escape(t['category'])}</td>"
             f"<td>{escape(t['status'])}</td><td>{escape(t['title'][:150])}</td></tr>" for t in data["tasks"]
@@ -73,7 +77,7 @@ a{{color:var(--accent)}}code{{font-size:12px}}
 <div class="card"><div>Tâches en suivi</div><div class="value">{len(data['tasks'])}</div></div></div>
 <section><h2>Décisions récentes</h2><table><thead><tr><th>ID</th><th>État</th><th>Décision</th></tr></thead><tbody>{recent}</tbody></table></section>
 <section><h2>Tâches</h2><table><thead><tr><th>ID</th><th>Type</th><th>État</th><th>Action</th></tr></thead><tbody>{tasks}</tbody></table></section>
-<section><h2>Exécutions isolées</h2><table><thead><tr><th>Tâche</th><th>Tentative</th><th>Profil</th><th>État</th><th>Durée (ms)</th></tr></thead><tbody>{isolated}</tbody></table></section>
+<section><h2>Exécutions isolées</h2><table><thead><tr><th>Tâche</th><th>Tentative</th><th>Profil</th><th>État</th><th>Durée (ms)</th><th>Résumé déclaré (non fiable)</th></tr></thead><tbody>{isolated}</tbody></table></section>
 <p>API JSON locale : <a href="/api/status">/api/status</a>. Les recherches externes et les coûts opérateurs ne sont pas vérifiés depuis cette interface.</p>
 </main></body></html>"""
 

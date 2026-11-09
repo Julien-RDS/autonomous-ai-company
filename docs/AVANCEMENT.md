@@ -86,3 +86,10 @@ reproduits et corrigés (profil HTML, base de travail, sorties terminal, liaison
 approbation/disque, approbation brûlée, résultat tardif, conteneur en démarrage).
 Diagnostic `sandbox doctor`, nettoyage ciblé audité (migration 008).
 150 réussis, 12 ignorés, 0 échec en Python 3.11 et 3.12. Voir LOT_3_SANDBOX.md.
+
+## Résultats et récupération après la PR #5
+
+Migration 009 : version des validateurs, résumés structurés non fiables et preuves
+d'exécution conservées. Nettoyage sérialisé avec intention persistante et absence
+Docker confirmée avant suppression des fichiers. Voir SANDBOX_RESULTS_RECOVERY.md.
+La validation de l'isolation Docker reste bloquée sur l'hôte cloud sans cgroups.
