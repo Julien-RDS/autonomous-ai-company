@@ -1,11 +1,20 @@
 """Durable at-least-once workflow delivery with fenced, expiring leases."""
 from datetime import timedelta, timezone
 import random
-from sqlalchemy import select, text
-from .database import WorkItem, Run, Attempt, AuditEvent, Task, Approval, utcnow, new_id
+from sqlalchemy import func, select, text
+from .database import WorkItem, Run, Attempt, AuditEvent, Task, Approval, WorkReview, utcnow, new_id
 
 class LostLease(RuntimeError):
     pass
+
+
+class Busy(RuntimeError):
+    """Resource still held by another live process: contention, not a failure."""
+
+
+# Contention never consumes max_attempts; it is bounded separately and then
+# handed to a human instead of being dead-lettered as a functional failure.
+MAX_BUSY_DEFERRALS = 10
 
 class Queue:
     def __init__(self, sessions, lease_seconds=120):
@@ -117,6 +126,46 @@ class Queue:
             attempt=db.get(Attempt,token); attempt.finished_at=utcnow(); attempt.outcome=item.state
             item.token=None; item.owner=None; item.lease_until=None
             db.add(AuditEvent(entity_id=item.id,kind=item.state.lower()))
+
+    def defer_busy(self, work_id, token):
+        """Give the item back without counting a failed attempt (old owner still alive)."""
+        with self.sessions.begin() as db:
+            item=self._owned(db,work_id,token)
+            reviewed=db.scalar(select(func.max(WorkReview.created_at)).where(WorkReview.work_id==work_id))
+            busy_query=select(func.count()).select_from(Attempt).where(
+                Attempt.work_id==work_id, Attempt.outcome=='BUSY')
+            if reviewed is not None:
+                busy_query=busy_query.where(Attempt.started_at >= reviewed)
+            busy=db.scalar(busy_query)
+            now=utcnow()
+            attempt=db.get(Attempt,token); attempt.finished_at=now; attempt.outcome='BUSY'
+            item.attempts-=1
+            if busy+1>=MAX_BUSY_DEFERRALS:
+                item.state='WAITING_APPROVAL'
+                db.add(AuditEvent(entity_id=item.id,kind='busy_exhausted'))
+            else:
+                item.state='RETRY_SCHEDULED'
+                item.scheduled_at=now+timedelta(seconds=min(300,10*2**busy)+random.random())
+                db.add(AuditEvent(entity_id=item.id,kind='busy_deferred'))
+            item.token=None; item.owner=None; item.lease_until=None
+            return item.state
+
+    def requeue(self, work_id, *, actor, reason):
+        actor, reason = actor.strip(), reason.strip()
+        if not actor or len(actor)>100 or not actor.isprintable():
+            raise ValueError('Identité humaine requise')
+        if not reason or len(reason)>500 or not reason.isprintable():
+            raise ValueError('Motif humain requis')
+        with self.sessions.begin() as db:
+            self._lock(db)
+            item=db.scalar(select(WorkItem).where(WorkItem.id==work_id).with_for_update())
+            if item is None or item.external or db.get(Run,item.run_id).mode != 'mock':
+                raise ValueError('Réactivation réservée aux travaux MOCK sans effet externe')
+            if item.state not in ('FAILED','WAITING_APPROVAL') or item.token or item.lease_until:
+                raise ValueError('Transition interdite ou lease encore présent')
+            db.add(WorkReview(work_id=work_id,actor=actor,reason=reason,previous_state=item.state))
+            item.state='PENDING'; item.attempts=0; item.scheduled_at=utcnow()
+            db.add(AuditEvent(entity_id=work_id,kind='human_requeued'))
 
     def cancel(self, work_id):
         with self.sessions.begin() as db:

@@ -11,7 +11,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from .config import Settings
 from .database import session_factory
 from .budget import Budget
-from .queue import Queue, LostLease
+from .queue import Queue, LostLease, Busy
 from .workflow import Board
 
 @contextmanager
@@ -33,7 +33,7 @@ def checkpoints(url, thread_id=None):
                     'SELECT pg_try_advisory_lock(hashtextextended(%s, 7109245))', (thread_id,)
                 ).fetchone()['pg_try_advisory_lock']
                 if not locked:
-                    raise RuntimeError('Workflow encore détenu par un autre processus')
+                    raise Busy('Workflow encore détenu par un autre processus')
             yield saver
         finally:
             if locked:
@@ -70,6 +70,13 @@ def work_once(sessions, settings, owner):
         queue.finish(item.id,item.token)
     except LostLease:
         logging.warning('worker_lost_lease work_id=%s',item.id)
+    except Busy:
+        # A previous owner whose lease expired is still running: wait, do not fail.
+        logging.warning('worker_busy work_id=%s',item.id)
+        try:
+            queue.defer_busy(item.id,item.token)
+        except LostLease:
+            pass
     except Exception as exc:
         logging.warning('worker_failed work_id=%s error=%s',item.id,type(exc).__name__)
         try:
@@ -86,6 +93,8 @@ def main():
     sub=parser.add_subparsers(dest='action',required=True)
     enqueue=sub.add_parser('enqueue'); enqueue.add_argument('key')
     prototype=sub.add_parser('enqueue-prototype'); prototype.add_argument('task_id')
+    review=sub.add_parser('requeue'); review.add_argument('work_id')
+    review.add_argument('--actor',required=True); review.add_argument('--reason',required=True)
     worker=sub.add_parser('run'); worker.add_argument('--once',action='store_true')
     worker.add_argument('--owner',default='local-worker')
     args=parser.parse_args()
@@ -97,6 +106,9 @@ def main():
         print(Queue(sessions).submit(args.key,settings.mission))
     elif args.action=='enqueue-prototype':
         print(Queue(sessions).submit_prototype(args.task_id))
+    elif args.action=='requeue':
+        Queue(sessions).requeue(args.work_id,actor=args.actor,reason=args.reason)
+        print('Travail remis en file après revue humaine.')
     else:
         failures = 0
         while True:

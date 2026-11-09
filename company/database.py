@@ -146,6 +146,66 @@ class AuditEvent(Base):
     kind: Mapped[str] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+class ExecutionApproval(Base):
+    """Single-use human authorization to run ONE sandboxed test of an exact manifest.
+
+    Distinct from Approval (generation): approving generation never allows execution.
+    """
+    __tablename__ = "execution_approvals"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=new_id)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
+    manifest_sha256: Mapped[str] = mapped_column(String(64))
+    profile: Mapped[str] = mapped_column(String(40))
+    image_id: Mapped[str] = mapped_column(String(80))
+    actor: Mapped[str] = mapped_column(String(100))
+    reason: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+SANDBOX_STATES = ("RUNNING", "PASSED", "FAILED", "TIMEOUT", "OUTPUT_LIMIT", "OOM", "ERROR", "INTERRUPTED")
+
+
+class SandboxRun(Base):
+    """One isolated execution attempt, bounded output, attached to its task and approval."""
+    __tablename__ = "sandbox_runs"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=new_id)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
+    approval_id: Mapped[str] = mapped_column(ForeignKey("execution_approvals.id"), unique=True)
+    attempt: Mapped[int] = mapped_column(Integer)
+    profile: Mapped[str] = mapped_column(String(40))
+    image_id: Mapped[str] = mapped_column(String(80))
+    manifest_sha256: Mapped[str] = mapped_column(String(64))
+    container_name: Mapped[str] = mapped_column(String(80))
+    timeout_s: Mapped[int] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(String(20), default="RUNNING")
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stdout: Mapped[str] = mapped_column(Text, default="")
+    stderr: Mapped[str] = mapped_column(Text, default="")
+    output_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    truncated: Mapped[bool] = mapped_column(default=False)
+    detail: Mapped[str] = mapped_column(String(250), default="")
+    __table_args__ = (
+        UniqueConstraint("task_id", "attempt", name="uq_sandbox_task_attempt"),
+        CheckConstraint("state IN ('RUNNING','PASSED','FAILED','TIMEOUT','OUTPUT_LIMIT','OOM','ERROR','INTERRUPTED')",
+                        name="ck_sandbox_state"),
+        CheckConstraint("attempt > 0 AND timeout_s > 0 AND output_bytes >= 0", name="ck_sandbox_bounds"),
+    )
+
+
+class WorkReview(Base):
+    __tablename__ = 'work_reviews'
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=new_id)
+    work_id: Mapped[str] = mapped_column(ForeignKey('work_items.id'), index=True)
+    actor: Mapped[str] = mapped_column(String(100))
+    reason: Mapped[str] = mapped_column(String(500))
+    previous_state: Mapped[str] = mapped_column(String(30))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 def session_factory(db_url: str):
     if db_url.startswith("sqlite:///"):
         path = Path(db_url.split("sqlite:///", 1)[1])

@@ -12,6 +12,7 @@ from pathlib import Path
 from .agents import AgentService
 from .config import ROOT
 from .database import Run, Task, Approval
+from .queue import Busy
 from .routing import select_provider
 from .workflow import parse_object
 
@@ -127,7 +128,7 @@ def prototype_lock(sessions, task_id):
                 'SELECT pg_try_advisory_lock(hashtextextended(:key, 7109246))'
             ), {'key': task_id})
             if not locked:
-                raise RuntimeError('Prototype déjà détenu par un autre processus')
+                raise Busy('Prototype déjà détenu par un autre processus')
             try:
                 yield
             finally:
@@ -140,7 +141,7 @@ def prototype_lock(sessions, task_id):
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                raise RuntimeError('Prototype déjà détenu par un autre processus') from None
+                raise Busy('Prototype déjà détenu par un autre processus') from None
             try:
                 yield
             finally:

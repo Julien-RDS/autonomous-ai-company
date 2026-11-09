@@ -16,6 +16,58 @@ from .routing import rank_providers
 from .workflow import Board
 
 
+def human_actor(explicit: str | None) -> str:
+    """Identity recorded with an approval; never a secret, bounded length."""
+    if explicit is None:
+        import getpass
+        try:
+            explicit = f"cli:{getpass.getuser()}"
+        except (KeyError, OSError):
+            explicit = "local-cli"
+    explicit = explicit.strip()
+    if not explicit or len(explicit) > 100 or not explicit.isprintable():
+        raise ValueError("--actor : identité lisible de 1 à 100 caractères requise")
+    return explicit
+
+
+def sandbox_command(args, sessions):
+    from . import sandbox
+    if args.sandbox_action == "approve":
+        if not args.reviewed:
+            raise ValueError("Relire le code puis confirmer avec --reviewed ; l'approbation de génération ne suffit pas")
+        image_id = sandbox.allowed_images().get(args.profile)
+        if image_id is None:
+            raise ValueError("Aucune image autorisée : définir SANDBOX_PYTHON_IMAGE_ID (sha256 vérifié)")
+        approval = sandbox.approve_execution(sessions, args.task_id, profile=args.profile, image_id=image_id,
+                                             actor=human_actor(args.actor), reason=args.reason)
+        print(f"Exécution autorisée une seule fois ({approval}). Rien n'a été lancé.")
+    elif args.sandbox_action == "run":
+        sandbox.cleanup(sessions)  # expired leftovers only
+        run = sandbox.run_approved(sessions, args.task_id)
+        print(f"Tentative {run.attempt} : {run.state} (code {run.exit_code}, {run.duration_ms} ms, "
+              f"{run.output_bytes} octets{', tronqués' if run.truncated else ''})")
+        if run.detail:
+            print(f"Détail : {run.detail}")
+        print("--- stdout (non fiable, borné) ---")
+        print(run.stdout)
+        print("--- stderr (non fiable, borné) ---")
+        print(run.stderr)
+    elif args.sandbox_action == "status":
+        from .database import SandboxRun
+        with sessions() as db:
+            runs = db.scalars(select(SandboxRun).where(SandboxRun.task_id == args.task_id)
+                              .order_by(SandboxRun.attempt)).all()
+        for run in runs:
+            print(f"#{run.attempt} {run.state} code={run.exit_code} image={run.image_id[:19]} "
+                  f"contenu={run.manifest_sha256[:12]} début={run.started_at:%Y-%m-%d %H:%M:%S}")
+        if not runs:
+            print("Aucune exécution isolée pour cette tâche.")
+    elif args.sandbox_action == "cleanup":
+        report = sandbox.cleanup(sessions, force=args.all)
+        print(f"Conteneurs supprimés : {len(report['containers_removed'])} ; "
+              f"exécutions marquées interrompues : {len(report['runs_interrupted'])}")
+
+
 def build():
     settings = Settings.load()
     sessions = session_factory(settings.db_url)
@@ -40,6 +92,7 @@ def main():
         sub.add_parser(action)
     p = sub.add_parser("approve", help="Approuver une tâche locale")
     p.add_argument("task_id")
+    p.add_argument("--actor", default=None, help="Identité humaine consignée (défaut : utilisateur système)")
     p = sub.add_parser("prototype", help="Générer le prototype d'une tâche approuvée (n'exécute pas le code)")
     p.add_argument("task_id")
     p = sub.add_parser("reconcile-cost", help="Consigner un coût inconnu vérifié par un humain")
@@ -51,6 +104,22 @@ def main():
     p.add_argument("--success", required=True, type=int, choices=(0, 1))
     p.add_argument("--value-eur", default=0.0, type=Decimal)
     p.add_argument("--notes", default="")
+    p = sub.add_parser("sandbox", help="Lot 3 : tests isolés dans Docker, après approbation d'exécution dédiée")
+    sandbox = p.add_subparsers(dest="sandbox_action", required=True)
+    sp = sandbox.add_parser("approve", help="Autoriser UNE exécution du contenu actuel d'un prototype généré")
+    sp.add_argument("task_id")
+    sp.add_argument("--profile", default="python-unittest")
+    sp.add_argument("--actor", default=None)
+    sp.add_argument("--reason", required=True, help="Motif humain (pas de secret)")
+    sp.add_argument("--reviewed", action="store_true",
+                    help="Confirme que le code a été relu avant d'autoriser son exécution isolée")
+    sp = sandbox.add_parser("run", help="Consommer une autorisation et lancer les tests dans Docker")
+    sp.add_argument("task_id")
+    sp = sandbox.add_parser("status", help="Historique des exécutions d'une tâche")
+    sp.add_argument("task_id")
+    sp = sandbox.add_parser("cleanup", help="Supprimer conteneurs/espaces orphelins, marquer les exécutions interrompues")
+    sp.add_argument("--all", action="store_true",
+                    help="Tout supprimer, y compris avant échéance : seulement si aucune exécution n'est en cours")
     args = parser.parse_args()
     try:
         settings, sessions, budget = build()
@@ -75,9 +144,9 @@ def main():
             if sessions.kw['bind'].dialect.name == 'postgresql':
                 from .worker import checkpoints
                 with checkpoints(settings.db_url, f"approval:{args.task_id}") as saver:
-                    approve_task(sessions, args.task_id, checkpointer=saver)
+                    approve_task(sessions, args.task_id, actor=human_actor(args.actor), checkpointer=saver)
             else:
-                approve_task(sessions, args.task_id)
+                approve_task(sessions, args.task_id, actor=human_actor(args.actor))
             print("Tâche approuvée. Aucun outil externe n'a été lancé.")
         elif args.action == "prototype":
             provider, files = generate_prototype(sessions, settings, budget, args.task_id)
@@ -98,6 +167,8 @@ def main():
                 t.value_eur = args.value_eur
                 t.notes = args.notes[:2000]
             print("Résultat enregistré : évaluation humaine / métrique externe, non jugement autonome du modèle.")
+        elif args.action == "sandbox":
+            sandbox_command(args, sessions)
         elif args.action == "dashboard":
             import uvicorn
             from .dashboard import create_app

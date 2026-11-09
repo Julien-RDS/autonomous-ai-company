@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -26,14 +26,15 @@ def dec(name: str, default: str = "0") -> Decimal:
 class Settings:
     mock: bool
     mission: str
-    db_url: str
+    # URL, keys and secrets never appear in repr(): logs and tracebacks print it.
+    db_url: str = field(repr=False)
     monthly_limit: Decimal
     run_limit: Decimal
     max_output_tokens: int
     models: dict[str, str]
-    keys: dict[str, str]
+    keys: dict[str, str] = field(repr=False)
     prices: dict[str, tuple[Decimal, Decimal]]
-    tavily_key: str
+    tavily_key: str = field(repr=False)
     tavily_search_price: Decimal
     timezone: str
     schedule_hour: int
