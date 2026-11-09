@@ -266,22 +266,53 @@ def resource_limits_supported(docker: str) -> bool:
     return caps["reachable"] and not caps["missing"]
 
 
-PROBE_SCRIPT = (
-    "import json, os\n"
-    "def r(*paths):\n"
-    "    for p in paths:\n"
-    "        try:\n"
-    "            return open(p).read().strip()\n"
-    "        except OSError:\n"
-    "            pass\n"
-    "print(json.dumps({'memory': r('/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory/memory.limit_in_bytes'),\n"
-    " 'swap_v2': r('/sys/fs/cgroup/memory.swap.max'),\n"
-    " 'memsw_v1': r('/sys/fs/cgroup/memory/memory.memsw.limit_in_bytes'),\n"
-    " 'pids': r('/sys/fs/cgroup/pids.max', '/sys/fs/cgroup/pids/pids.max'),\n"
-    " 'cpu_v2': r('/sys/fs/cgroup/cpu.max'),\n"
-    " 'quota_v1': r('/sys/fs/cgroup/cpu/cpu.cfs_quota_us', '/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us'),\n"
-    " 'period_v1': r('/sys/fs/cgroup/cpu/cpu.cfs_period_us', '/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us'),\n"
-    " 'uid': os.getuid()}))\n")
+# Fixed application probe (never user content). It locates its OWN cgroup through
+# /proc/self/cgroup, so it works with cgroup v1, v2 with a private cgroup
+# namespace (paths at the root) and v2 with the host namespace (nested paths).
+PROBE_SCRIPT = r"""
+import json, os
+def read(path):
+    try:
+        with open(path) as handle:
+            return handle.read().strip()
+    except OSError:
+        return None
+own = {}
+for line in (read('/proc/self/cgroup') or '').splitlines():
+    parts = line.split(':', 2)
+    if len(parts) == 3:
+        for controller in (parts[1].split(',') if parts[1] else ['']):
+            own[controller] = parts[2].strip('/')
+def first(candidates):
+    for path in candidates:
+        value = read(path)
+        if value is not None:
+            return value
+    return None
+def v2(name):
+    nested = own.get('', '')
+    return first(([f'/sys/fs/cgroup/{nested}/{name}'] if nested else []) + [f'/sys/fs/cgroup/{name}'])
+def v1(controller, directories, name):
+    nested = own.get(controller, '')
+    paths = []
+    for directory in directories:
+        if nested:
+            paths.append(f'/sys/fs/cgroup/{directory}/{nested}/{name}')
+        paths.append(f'/sys/fs/cgroup/{directory}/{name}')
+    return first(paths)
+cpu_dirs = ['cpu', 'cpu,cpuacct', 'cpuacct,cpu']
+print(json.dumps({
+    'memory': v2('memory.max') or v1('memory', ['memory'], 'memory.limit_in_bytes'),
+    'swap_v2': v2('memory.swap.max'),
+    'memsw_v1': v1('memory', ['memory'], 'memory.memsw.limit_in_bytes'),
+    'pids': v2('pids.max') or v1('pids', ['pids'], 'pids.max'),
+    'cpu_v2': v2('cpu.max'),
+    'quota_v1': v1('cpu', cpu_dirs, 'cpu.cfs_quota_us'),
+    'period_v1': v1('cpu', cpu_dirs, 'cpu.cfs_period_us'),
+    'uid': os.getuid(),
+    'cgroup': (read('/proc/self/cgroup') or '')[:200],
+}))
+"""
 PROBE_PROFILE = Profile(name="limits-probe", argv=("python", "-I", "-B", "-c", PROBE_SCRIPT),
                         env=(("HOME", "/tmp"), ("LANG", "C.UTF-8")))
 
@@ -318,7 +349,13 @@ def limits_mismatch(observed: dict, limits: Limits) -> list[str]:
     return problems
 
 
-def probe_enforcement(docker: str, workspace: Path, image_id: str, limits: Limits, run_id: str) -> list[str]:
+def describe_observed(observed: dict) -> str:
+    keys = ("memory", "swap_v2", "memsw_v1", "pids", "cpu_v2", "quota_v1", "period_v1", "uid")
+    return " ".join(f"{k}={str(observed.get(k))[:24]}" for k in keys if observed.get(k) is not None) or "aucune valeur"
+
+
+def probe_enforcement(docker: str, workspace: Path, image_id: str, limits: Limits, run_id: str,
+                      details: dict | None = None) -> list[str]:
     """Run a fixed application probe with the SAME options and read the effective limits."""
     name = f"{NAME_PREFIX}{run_id}-probe"
     deadline = int(time.time()) + 30 + CLEANUP_GRACE_S
@@ -332,12 +369,33 @@ def probe_enforcement(docker: str, workspace: Path, image_id: str, limits: Limit
         started = _docker(docker, "start", "--attach", name, timeout=30)
         if started.returncode != 0:
             return ["vérification des limites impossible"]
-        return limits_mismatch(json.loads(started.stdout.decode().strip().splitlines()[-1]), limits)
+        observed = json.loads(started.stdout.decode().strip().splitlines()[-1])
+        if not isinstance(observed, dict):
+            return ["vérification des limites impossible"]
+        if details is not None:
+            details.update(observed)
+        return limits_mismatch(observed, limits)
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
         return ["vérification des limites impossible"]
     finally:
         if owned:
             _remove(docker, name)
+
+
+def check_limits(image_id: str, limits: Limits = DEFAULT_LIMITS) -> dict:
+    """Diagnostic: run only the fixed probe in an empty workspace and report kernel values."""
+    if not IMAGE_ID.match(image_id):
+        raise SandboxRefused("Image non identifiée par un ID sha256")
+    docker, run_id = docker_binary(), new_id()
+    workspace = secure_base() / run_id
+    workspace.mkdir(mode=0o700)
+    try:
+        workspace.chmod(0o555)
+        observed: dict = {}
+        problems = probe_enforcement(docker, workspace, image_id, limits, run_id, observed)
+        return {"capabilities": docker_capabilities(docker), "observed": observed, "problems": problems}
+    finally:
+        _discard_workspace(workspace)
 
 
 def execution_verdict(exit_code, stderr, profile, *, truncated=False):
@@ -417,11 +475,12 @@ def _execute(files: list[dict], profile_name: str, image_id: str, *, run_id: str
         for path in [workspace, *workspace.rglob("*")]:
             # Readable by the unprivileged container user; never writable.
             path.chmod(0o555 if path.is_dir() else 0o444)
-        missing = probe_enforcement(docker, workspace, image_id, limits, run_id)
+        observed: dict = {}
+        missing = probe_enforcement(docker, workspace, image_id, limits, run_id, observed)
         if missing:
             # An accepted Docker option is not proof: the kernel values did not match.
             return result("ERROR", detail="limites non appliquées par le noyau (" + ", ".join(missing)
-                          + ") ; exécution refusée")
+                          + ") ; exécution refusée ; observé : " + describe_observed(observed))
         deadline = int(time.time()) + limits.timeout_s + CLEANUP_GRACE_S
         create = _docker(docker, *docker_create_argv(docker, name, workspace, profile, image_id, limits,
                                                      deadline)[1:])

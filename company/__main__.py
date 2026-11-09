@@ -67,6 +67,19 @@ def sandbox_command(args, sessions):
                   f"contenu={run.manifest_sha256[:12]} début={run.started_at:%Y-%m-%d %H:%M:%S}")
         if not runs:
             print("Aucune exécution isolée pour cette tâche.")
+    elif args.sandbox_action == "probe":
+        import json as _json
+        image_id = args.image_id or sandbox.allowed_images().get("python-unittest")
+        if not image_id:
+            raise ValueError("--image-id ou SANDBOX_PYTHON_IMAGE_ID requis")
+        report = sandbox.check_limits(image_id)
+        caps = report["capabilities"]
+        print(f"cgroup v{caps.get('cgroup_version')} ({caps.get('cgroup_driver')}) ; rootless : "
+              f"{'oui' if caps.get('rootless') else 'non'} ; capacités manquantes : {', '.join(caps['missing']) or 'aucune'}")
+        print("Valeurs observées dans le conteneur : " + sandbox.display_safe(_json.dumps(report["observed"])))
+        print("Écarts : " + (", ".join(report["problems"]) or "aucun — limites appliquées"))
+        if report["problems"]:
+            raise RuntimeError("Limites non appliquées : exécutions refusées sur cet hôte")
     elif args.sandbox_action == "doctor":
         report = sandbox.diagnose(sessions)
         caps = report["capabilities"]
@@ -152,6 +165,8 @@ def main():
     sp.add_argument("--actor", default=None)
     sp.add_argument("--reason", default=None, help="Motif consigné (obligatoire avec --run)")
     sandbox.add_parser("doctor", help="Diagnostic lecture seule : capacités Docker, exécutions RUNNING, orphelins")
+    sp = sandbox.add_parser("probe", help="Lire les limites cgroup effectives avec la sonde fixe (aucun code de prototype)")
+    sp.add_argument("--image-id", default=None, help="ID sha256 local (défaut : SANDBOX_PYTHON_IMAGE_ID)")
     args = parser.parse_args()
     try:
         settings, sessions, budget = build()
