@@ -55,11 +55,19 @@ PROFILES = {
         name="python-unittest",
         # -I: isolated mode (ignores PYTHON* variables and user site); -B: no .pyc
         # on the read-only workspace. unittest discovery imports test_*.py files.
-        argv=("python", "-I", "-B", "-m", "unittest", "discover",
-              "-s", "/workspace", "-t", "/workspace", "-p", "test_*.py", "-v"),
+        argv=("python", "-I", "-B", "-c",
+              "import sys, unittest; s=unittest.defaultTestLoader.discover('/workspace',pattern='test_*.py',top_level_dir='/workspace'); "
+              "n=s.countTestCases(); print('Discovered tests:', n); "
+              "sys.exit(2) if n == 0 else sys.exit(not unittest.TextTestRunner(verbosity=2).run(s).wasSuccessful())"),
         env=(("HOME", "/tmp"), ("PYTHONDONTWRITEBYTECODE", "1"), ("LANG", "C.UTF-8")),
     ),
 }
+
+PROFILES['static-html'] = Profile(
+    name='static-html', argv=('python','-I','-B','-c',
+        Path(__file__).with_name('static_validation.py').read_text(encoding='utf-8')),
+    env=PROFILES['python-unittest'].env,
+)
 
 
 @dataclass(frozen=True)
@@ -123,7 +131,7 @@ def allowed_images() -> dict[str, str]:
         return {}
     if not IMAGE_ID.match(image):
         raise SandboxRefused("SANDBOX_PYTHON_IMAGE_ID doit être un identifiant sha256:<64 hex>")
-    return {"python-unittest": image}
+    return {name: image for name in PROFILES}
 
 
 def manifest_digest(files: list[dict]) -> str:
@@ -162,9 +170,14 @@ def docker_create_argv(docker: str, name: str, workspace: Path, profile: Profile
         "--workdir", "/workspace",
         "--mount", f"type=bind,source={workspace},target=/workspace,readonly",
     ]
+    # Docker CLI may inject proxy variables from its config; never expose those.
+    for key in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','FTP_PROXY','NO_PROXY',
+                'http_proxy','https_proxy','all_proxy','ftp_proxy','no_proxy'):
+        argv += ['--env', f'{key}=']
+    argv += ['--entrypoint','python']
     for key, value in profile.env:
         argv += ["--env", f"{key}={value}"]
-    return argv + [image_id, *profile.argv]
+    return argv + [image_id, *profile.argv[1:]]
 
 
 class _Sink:
@@ -205,6 +218,12 @@ def _remove(docker: str, name: str) -> None:
         pass  # sandbox cleanup retries later from the label
 
 
+def resource_limits_supported(docker: str) -> bool:
+    probe = _docker(docker, 'info', '--format',
+                    '{{json .MemoryLimit}} {{json .SwapLimit}} {{json .PidsLimit}} {{json .CPUCfsQuota}}')
+    return probe.returncode == 0 and probe.stdout.decode().strip().split() == ['true'] * 4
+
+
 def execute(files: list[dict], profile_name: str, image_id: str, *, run_id: str | None = None,
             limits: Limits = DEFAULT_LIMITS, on_started=None) -> SandboxResult:
     """Run the profile's fixed command against `files` inside a disposable container."""
@@ -229,9 +248,13 @@ def execute(files: list[dict], profile_name: str, image_id: str, *, run_id: str 
                              stdout=sinks[0].text(), stderr=sinks[1].text(), output_bytes=total,
                              truncated=any(s.seen > len(s.data) for s in sinks),
                              detail=detail[:250], container_name=name)
+    workspace_created = container_created = False
     try:
+        if not resource_limits_supported(docker):
+            return result('ERROR', detail='Docker ne peut pas imposer les limites mémoire/CPU/PID; exécution refusée')
         # Fresh directory, regular files only; same path rules as generation.
         workspace.mkdir(mode=0o700)
+        workspace_created = True
         safe_files(workspace, files)
         for path in [workspace, *workspace.rglob("*")]:
             # Readable by the unprivileged container user; never writable.
@@ -241,6 +264,7 @@ def execute(files: list[dict], profile_name: str, image_id: str, *, run_id: str 
                                                      deadline)[1:])
         if create.returncode != 0:
             return result("ERROR", detail="docker create refusé : image absente/non autorisée ou démon indisponible")
+        container_created = True
         process = subprocess.Popen([docker, "start", "--attach", name], stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         overflow = threading.Event()
@@ -292,8 +316,9 @@ def execute(files: list[dict], profile_name: str, image_id: str, *, run_id: str 
     except (OSError, subprocess.SubprocessError) as exc:
         return result("ERROR", None, f"erreur d'exécution Docker ({type(exc).__name__})")
     finally:
-        _remove(docker, name)
-        if workspace.exists():
+        if container_created:
+            _remove(docker, name)
+        if workspace_created and workspace.exists():
             _discard_workspace(workspace)
 
 

@@ -221,7 +221,8 @@ def test_docker_argv_isolation_without_model_content(tmp_path):
                       "--env-file", "seccomp=unconfined", hostile):
         assert forbidden not in joined
     image_at = argv.index(FAKE_IMAGE)
-    assert tuple(argv[image_at + 1:]) == sandbox.PROFILES["python-unittest"].argv
+    assert tuple(argv[image_at + 1:]) == sandbox.PROFILES["python-unittest"].argv[1:]
+    assert '--entrypoint' in argv and 'HTTP_PROXY=' in argv
     with pytest.raises(sandbox.SandboxRefused):
         sandbox.docker_create_argv("docker", "n", tmp_path, sandbox.PROFILES["python-unittest"],
                                    "python:3.12", sandbox.DEFAULT_LIMITS, 1)
@@ -242,7 +243,7 @@ def test_image_allowlist_and_workdir_validation(monkeypatch):
     with pytest.raises(sandbox.SandboxRefused):
         sandbox.allowed_images()
     monkeypatch.setenv("SANDBOX_PYTHON_IMAGE_ID", FAKE_IMAGE)
-    assert sandbox.allowed_images() == {"python-unittest": FAKE_IMAGE}
+    assert sandbox.allowed_images() == {name: FAKE_IMAGE for name in sandbox.PROFILES}
     monkeypatch.setenv("SANDBOX_WORKDIR", "/tmp/a,readonly=false")
     with pytest.raises(sandbox.SandboxRefused):
         sandbox.workspace_base()

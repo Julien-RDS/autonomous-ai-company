@@ -93,6 +93,8 @@ def main():
     sub=parser.add_subparsers(dest='action',required=True)
     enqueue=sub.add_parser('enqueue'); enqueue.add_argument('key')
     prototype=sub.add_parser('enqueue-prototype'); prototype.add_argument('task_id')
+    review=sub.add_parser('requeue'); review.add_argument('work_id')
+    review.add_argument('--actor',required=True); review.add_argument('--reason',required=True)
     worker=sub.add_parser('run'); worker.add_argument('--once',action='store_true')
     worker.add_argument('--owner',default='local-worker')
     args=parser.parse_args()
@@ -104,6 +106,9 @@ def main():
         print(Queue(sessions).submit(args.key,settings.mission))
     elif args.action=='enqueue-prototype':
         print(Queue(sessions).submit_prototype(args.task_id))
+    elif args.action=='requeue':
+        Queue(sessions).requeue(args.work_id,actor=args.actor,reason=args.reason)
+        print('Travail remis en file après revue humaine.')
     else:
         failures = 0
         while True:

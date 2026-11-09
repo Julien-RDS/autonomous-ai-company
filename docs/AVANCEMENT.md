@@ -69,3 +69,11 @@ d'un travail dont l'ancien propriétaire était encore vivant, corrigées avec t
 Exécuteur Docker isolé, approbation d'exécution à usage unique, migration additive
 006 et commandes `sandbox`. Validé localement sous Python 3.11/3.12 avec
 PostgreSQL 16 et Docker réels ; CI distante de la branche à observer après push.
+
+### Revue du Lot 3 et suites
+
+Bundle Claude importé sur feat/lot-3-sandbox, sans fusion. Remise en file humaine
+avec audit, profil statique HTML, image CI épinglée et dashboard sandbox ajoutés.
+Limite cloud confirmée : Docker rootless sans contrôleurs de ressources ; sandbox
+refusé par défaut dans ce cas. Les intégrations d'isolation Docker ne sont pas
+validées dans cet environnement. Voir LOT_3_SANDBOX.md.

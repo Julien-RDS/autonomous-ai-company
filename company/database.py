@@ -196,6 +196,16 @@ class SandboxRun(Base):
     )
 
 
+class WorkReview(Base):
+    __tablename__ = 'work_reviews'
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=new_id)
+    work_id: Mapped[str] = mapped_column(ForeignKey('work_items.id'), index=True)
+    actor: Mapped[str] = mapped_column(String(100))
+    reason: Mapped[str] = mapped_column(String(500))
+    previous_state: Mapped[str] = mapped_column(String(30))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 def session_factory(db_url: str):
     if db_url.startswith("sqlite:///"):
         path = Path(db_url.split("sqlite:///", 1)[1])

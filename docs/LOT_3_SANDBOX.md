@@ -127,3 +127,55 @@ TEST_DATABASE_URL=postgresql+psycopg://company:MOT_DE_PASSE@127.0.0.1:5432/compa
 TEST_SANDBOX_IMAGE=python:3.12-slim \
 python -m pytest -q -rs
 ```
+
+## Suite après revue (novembre 2026)
+
+- Remise en file humaine :
+  `python -m company.worker requeue WORK_ID --actor julien --reason "cause corrigée"`.
+  Réservé aux travaux MOCK non externes en FAILED/WAITING_APPROVAL, sans lease.
+  La migration 007 conserve les revues humaines et tout l'historique des tentatives.
+  La nouvelle revue ouvre un budget de tentatives et de reports BUSY neuf.
+  Cette commande ne crée aucune approbation d'exécution sandbox.
+- Profil `static-html` : vérifie index.html, éléments html/body/title et ressources
+  locales existantes. Refuse les URL externes et la traversée de chemins. Le JS
+  n'est jamais interprété ; ce contrôle structurel ne valide pas le comportement
+  d'un navigateur ni la sécurité complète d'une application web.
+  Exemple : `python -m company sandbox approve TASK --profile static-html
+  --actor julien --reason "structure relue" --reviewed`, puis `sandbox run TASK`.
+- `/api/sandbox-runs` et le dashboard affichent les 50 dernières exécutions en
+  lecture seule. Les sorties stdout/stderr ne sont pas diffusées par cette API.
+- La variable de dépôt GitHub `SANDBOX_TEST_IMAGE` permet de choisir explicitement
+  l'image de CI. Le défaut est un digest Python vérifié dans les métadonnées Docker
+  du registre le 9 novembre 2026, jamais un digest inventé. Après changement,
+  vérifier la provenance de l'image et réobserver la CI.
+- Un run unittest sans aucun test est un échec. Le point d'entrée de l'image est
+  remplacé par la commande Python fixe ; les variables de proxy injectables par
+  Docker sont vidées dans le conteneur. Le client Docker garde sa configuration.
+- Les répertoires et conteneurs préexistants ne sont pas nettoyés par une tentative
+  qui ne les a pas créés. Le nettoyage d'orphelins reste une commande dédiée.
+
+## Limite observée dans l'environnement cloud
+
+Le démon actuel annonce cgroup v2, mais MemoryLimit, SwapLimit, PidsLimit sont
+faux : Docker rootless sans délégation cgroup. Lors du test initial du bundle,
+une allocation supérieure à 64 Mo a réussi malgré `--memory 64m`.
+Ce résultat est un échec de la garantie d'isolation, pas un test réussi.
+
+Le lanceur vérifie désormais les capacités mémoire, swap, PID et quota CPU et
+refuse toute exécution si elles sont indisponibles. Ne pas contourner ce refus.
+La validation des tests Docker complets exige un hôte avec contrôleurs cgroup
+opérationnels (par exemple un runner GitHub compatible). Aucun worker réel ni
+prototype IA n'a été exécuté pendant cette revue.
+
+Résultats de revue du 9 novembre 2026 :
+- Bundle original, Python 3.12 + PostgreSQL + Docker : 95 réussis, 11 ignorés,
+  1 échec (limite mémoire inopérante).
+- Après corrections, Python 3.12 + PostgreSQL : 96 réussis, 21 ignorés.
+- Après corrections, Python 3.11 + PostgreSQL dans Docker : 95 réussis, 22 ignorés.
+Les tests d'exécution Docker sont explicitement non validés dans ces deux derniers
+passages (TEST_SANDBOX_IMAGE non défini) : le garde-fou réel a été testé séparément
+et refuse correctement le démon sans cgroups. Le passage 3.12 inclut l'arrêt et
+redémarrage PostgreSQL ; le passage 3.11 ne le lance pas depuis le conteneur.
+La CI se déclenche aussi sur push de feat/lot-3-sandbox pour pouvoir vérifier
+l'isolation sur un runner compatible avant la création de PR. Aucun résultat
+GitHub distant n'est affirmé sans observation.

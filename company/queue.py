@@ -2,7 +2,7 @@
 from datetime import timedelta, timezone
 import random
 from sqlalchemy import func, select, text
-from .database import WorkItem, Run, Attempt, AuditEvent, Task, Approval, utcnow, new_id
+from .database import WorkItem, Run, Attempt, AuditEvent, Task, Approval, WorkReview, utcnow, new_id
 
 class LostLease(RuntimeError):
     pass
@@ -131,8 +131,12 @@ class Queue:
         """Give the item back without counting a failed attempt (old owner still alive)."""
         with self.sessions.begin() as db:
             item=self._owned(db,work_id,token)
-            busy=db.scalar(select(func.count()).select_from(Attempt).where(
-                Attempt.work_id==work_id, Attempt.outcome=='BUSY'))
+            reviewed=db.scalar(select(func.max(WorkReview.created_at)).where(WorkReview.work_id==work_id))
+            busy_query=select(func.count()).select_from(Attempt).where(
+                Attempt.work_id==work_id, Attempt.outcome=='BUSY')
+            if reviewed is not None:
+                busy_query=busy_query.where(Attempt.started_at >= reviewed)
+            busy=db.scalar(busy_query)
             now=utcnow()
             attempt=db.get(Attempt,token); attempt.finished_at=now; attempt.outcome='BUSY'
             item.attempts-=1
@@ -145,6 +149,23 @@ class Queue:
                 db.add(AuditEvent(entity_id=item.id,kind='busy_deferred'))
             item.token=None; item.owner=None; item.lease_until=None
             return item.state
+
+    def requeue(self, work_id, *, actor, reason):
+        actor, reason = actor.strip(), reason.strip()
+        if not actor or len(actor)>100 or not actor.isprintable():
+            raise ValueError('Identité humaine requise')
+        if not reason or len(reason)>500 or not reason.isprintable():
+            raise ValueError('Motif humain requis')
+        with self.sessions.begin() as db:
+            self._lock(db)
+            item=db.scalar(select(WorkItem).where(WorkItem.id==work_id).with_for_update())
+            if item is None or item.external or db.get(Run,item.run_id).mode != 'mock':
+                raise ValueError('Réactivation réservée aux travaux MOCK sans effet externe')
+            if item.state not in ('FAILED','WAITING_APPROVAL') or item.token or item.lease_until:
+                raise ValueError('Transition interdite ou lease encore présent')
+            db.add(WorkReview(work_id=work_id,actor=actor,reason=reason,previous_state=item.state))
+            item.state='PENDING'; item.attempts=0; item.scheduled_at=utcnow()
+            db.add(AuditEvent(entity_id=work_id,kind='human_requeued'))
 
     def cancel(self, work_id):
         with self.sessions.begin() as db:
