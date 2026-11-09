@@ -77,3 +77,12 @@ avec audit, profil statique HTML, image CI épinglée et dashboard sandbox ajout
 Limite cloud confirmée : Docker rootless sans contrôleurs de ressources ; sandbox
 refusé par défaut dans ce cas. Les intégrations d'isolation Docker ne sont pas
 validées dans cet environnement. Voir LOT_3_SANDBOX.md.
+
+## Lot 3 — validation réelle et récupération
+
+Sandbox validé sur Docker rootful (cgroup v1) avec mesure des limites dans le
+conteneur ; sonde de limites effectives avant chaque exécution. Sept défauts
+reproduits et corrigés (profil HTML, base de travail, sorties terminal, liaison
+approbation/disque, approbation brûlée, résultat tardif, conteneur en démarrage).
+Diagnostic `sandbox doctor`, nettoyage ciblé audité (migration 008).
+150 réussis, 12 ignorés, 0 échec en Python 3.11 et 3.12. Voir LOT_3_SANDBOX.md.

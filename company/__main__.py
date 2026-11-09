@@ -40,30 +40,58 @@ def sandbox_command(args, sessions):
             raise ValueError("Aucune image autorisée : définir SANDBOX_PYTHON_IMAGE_ID (sha256 vérifié)")
         approval = sandbox.approve_execution(sessions, args.task_id, profile=args.profile, image_id=image_id,
                                              actor=human_actor(args.actor), reason=args.reason)
+        from .database import ExecutionApproval
+        with sessions() as db:
+            record = db.get(ExecutionApproval, approval)
         print(f"Exécution autorisée une seule fois ({approval}). Rien n'a été lancé.")
+        print(f"Contenu autorisé (SHA-256) : {record.manifest_sha256} ; profil {record.profile} ; image {record.image_id}")
     elif args.sandbox_action == "run":
-        sandbox.cleanup(sessions)  # expired leftovers only
+        sandbox.cleanup(sessions, actor="cli:sandbox-run")  # expired leftovers only
         run = sandbox.run_approved(sessions, args.task_id)
         print(f"Tentative {run.attempt} : {run.state} (code {run.exit_code}, {run.duration_ms} ms, "
               f"{run.output_bytes} octets{', tronqués' if run.truncated else ''})")
         if run.detail:
-            print(f"Détail : {run.detail}")
-        print("--- stdout (non fiable, borné) ---")
-        print(run.stdout)
-        print("--- stderr (non fiable, borné) ---")
-        print(run.stderr)
+            print(f"Détail : {sandbox.display_safe(run.detail)}")
+        # Untrusted container output: control/escape characters are neutralized.
+        print("--- stdout (non fiable, borné, caractères de contrôle neutralisés) ---")
+        print(sandbox.display_safe(run.stdout))
+        print("--- stderr (non fiable, borné, caractères de contrôle neutralisés) ---")
+        print(sandbox.display_safe(run.stderr))
     elif args.sandbox_action == "status":
         from .database import SandboxRun
         with sessions() as db:
             runs = db.scalars(select(SandboxRun).where(SandboxRun.task_id == args.task_id)
                               .order_by(SandboxRun.attempt)).all()
         for run in runs:
-            print(f"#{run.attempt} {run.state} code={run.exit_code} image={run.image_id[:19]} "
+            print(f"#{run.attempt} run={run.id} {run.state} code={run.exit_code} image={run.image_id[:19]} "
                   f"contenu={run.manifest_sha256[:12]} début={run.started_at:%Y-%m-%d %H:%M:%S}")
         if not runs:
             print("Aucune exécution isolée pour cette tâche.")
+    elif args.sandbox_action == "doctor":
+        report = sandbox.diagnose(sessions)
+        caps = report["capabilities"]
+        print(f"Docker joignable : {'oui' if caps['reachable'] else 'NON'} ; cgroup v{caps.get('cgroup_version')} "
+              f"({caps.get('cgroup_driver')}) ; rootless : {'oui' if caps.get('rootless') else 'non'}")
+        print("Capacités manquantes : " + (", ".join(caps["missing"]) if caps["missing"]
+              else "aucune déclarée (l'application réelle est vérifiée à chaque exécution)"))
+        for run in report["running"]:
+            print(f"Run {run['run_id']} tâche {run['task_id']} #{run['attempt']} : {run['status']}")
+        if not report["running"]:
+            print("Aucune exécution RUNNING.")
+        for name in report["unknown_containers"]:
+            print(f"Conteneur sandbox sans exécution connue : {name}")
+    elif args.sandbox_action == "cleanup" and args.run:
+        if args.all:
+            raise ValueError("--run et --all sont exclusifs")
+        if not args.reason:
+            raise ValueError("--reason est obligatoire pour un nettoyage ciblé")
+        report = sandbox.cleanup_run(sessions, args.run, actor=human_actor(args.actor), reason=args.reason)
+        print(f"Run {report['run_id']} ({report['previous_state']}) : {report['outcome']} ; conteneurs supprimés : "
+              f"{len(report['containers_removed'])} ; espace supprimé : {'oui' if report['workspace_removed'] else 'non'}")
+        print("Aucune approbation consommée, aucun test relancé.")
     elif args.sandbox_action == "cleanup":
-        report = sandbox.cleanup(sessions, force=args.all)
+        report = sandbox.cleanup(sessions, force=args.all, actor=human_actor(args.actor),
+                                 reason=args.reason or ("nettoyage forcé" if args.all else "nettoyage des orphelins échus"))
         print(f"Conteneurs supprimés : {len(report['containers_removed'])} ; "
               f"exécutions marquées interrompues : {len(report['runs_interrupted'])}")
 
@@ -120,6 +148,10 @@ def main():
     sp = sandbox.add_parser("cleanup", help="Supprimer conteneurs/espaces orphelins, marquer les exécutions interrompues")
     sp.add_argument("--all", action="store_true",
                     help="Tout supprimer, y compris avant échéance : seulement si aucune exécution n'est en cours")
+    sp.add_argument("--run", default=None, help="Nettoyage ciblé d'une seule exécution (identifiant de run)")
+    sp.add_argument("--actor", default=None)
+    sp.add_argument("--reason", default=None, help="Motif consigné (obligatoire avec --run)")
+    sandbox.add_parser("doctor", help="Diagnostic lecture seule : capacités Docker, exécutions RUNNING, orphelins")
     args = parser.parse_args()
     try:
         settings, sessions, budget = build()

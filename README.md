@@ -213,6 +213,8 @@ processus et sortie :
 python -m company sandbox approve IDENTIFIANT_TACHE --reviewed --actor VOTRE_NOM --reason "code relu"
 python -m company sandbox run IDENTIFIANT_TACHE
 python -m company sandbox status IDENTIFIANT_TACHE
+python -m company sandbox doctor            # capacités Docker et runs orphelins
+python -m company sandbox cleanup --run RUN_ID --actor VOTRE_NOM --reason "motif"
 ```
 
 Le code généré n'est jamais exécuté sur l'hôte. Configuration, garanties et

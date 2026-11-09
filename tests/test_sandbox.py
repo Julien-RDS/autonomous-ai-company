@@ -71,9 +71,14 @@ def generated_task(engine, tmp_path, monkeypatch, files=None):
     return sessions, task_id
 
 
-def set_manifest(sessions, task_id, files):
+def set_manifest(sessions, task_id, files, *, disk=True):
+    """Replace the generated content by developer fixtures, in the DB and (by default) on disk."""
     with sessions.begin() as db:
         db.get(Task, task_id).artifact_manifest = json.dumps({"provider": "fixture", "files": files})
+    if disk:
+        root = prototyping.ROOT / "artifacts" / "prototypes" / task_id
+        shutil.rmtree(root, ignore_errors=True)
+        prototyping.safe_files(root, files)
 
 
 def fake_executor(calls, state="PASSED"):
