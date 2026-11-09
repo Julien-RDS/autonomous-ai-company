@@ -155,6 +155,7 @@ class ExecutionApproval(Base):
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=new_id)
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
     manifest_sha256: Mapped[str] = mapped_column(String(64))
+    validator_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     profile: Mapped[str] = mapped_column(String(40))
     image_id: Mapped[str] = mapped_column(String(80))
     actor: Mapped[str] = mapped_column(String(100))
@@ -173,6 +174,8 @@ class SandboxRun(Base):
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
     approval_id: Mapped[str] = mapped_column(ForeignKey("execution_approvals.id"), unique=True)
     attempt: Mapped[int] = mapped_column(Integer)
+    validator_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     profile: Mapped[str] = mapped_column(String(40))
     image_id: Mapped[str] = mapped_column(String(80))
     manifest_sha256: Mapped[str] = mapped_column(String(64))
@@ -219,6 +222,14 @@ class WorkReview(Base):
     reason: Mapped[str] = mapped_column(String(500))
     previous_state: Mapped[str] = mapped_column(String(30))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SandboxEvidence(Base):
+    __tablename__='sandbox_evidence'
+    id: Mapped[str] = mapped_column(String(40),primary_key=True,default=new_id)
+    run_id: Mapped[str] = mapped_column(ForeignKey('sandbox_runs.id'),unique=True)
+    outcome_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow)
 
 
 def session_factory(db_url: str):

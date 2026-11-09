@@ -219,3 +219,7 @@ python -m company sandbox cleanup --run RUN_ID --actor VOTRE_NOM --reason "motif
 
 Le code généré n'est jamais exécuté sur l'hôte. Configuration, garanties et
 limites : [docs/LOT_3_SANDBOX.md](docs/LOT_3_SANDBOX.md).
+
+Les résumés de tests déclarés et leur provenance sont visibles dans le dashboard.
+La récupération confirme la disparition des conteneurs avant suppression des
+workspaces. Voir [résultats et récupération](docs/SANDBOX_RESULTS_RECOVERY.md).
