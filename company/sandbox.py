@@ -135,7 +135,7 @@ def secure_base(create: bool = True) -> Path | None:
     except FileNotFoundError:
         if not create:
             return None
-        base.mkdir(mode=0o700, parents=True)
+        base.mkdir(mode=0o700, parents=True, exist_ok=True)
         info = os.lstat(base)
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or os.path.realpath(base) != str(base):
         raise SandboxRefused("SANDBOX_WORKDIR doit être un répertoire réel, sans lien symbolique")
