@@ -18,8 +18,9 @@
 
 - Recherche Tavily facultative, bornée et comptabilisée avec un coût paramétré.
 - Écriture de fichiers de prototypes locaux après approbation.
-- Manquent : connexion GitHub, navigateur agentique, tests isolés en sandbox Docker et déploiement.
-- Aucune commande système issue d'une IA n'est autorisée.
+- Lot 3 : tests isolés des prototypes dans Docker, après approbation d'exécution dédiée et à usage unique (voir `LOT_3_SANDBOX.md`).
+- Manquent : connexion GitHub, navigateur agentique, profils de test autres que Python, exécution depuis la file durable et déploiement.
+- Aucune commande système issue d'une IA n'est exécutée sur l'hôte ; seule la commande de test fixée par l'application tourne dans le conteneur.
 
 ## Phase 4 — Intelligence économique : ÉBAUCHE
 
@@ -38,7 +39,7 @@
 - Refus du mode réel tant que clés, modèles et tarifs ne sont pas renseignés.
 - Contrôle budgétaire prévisionnel local ; les limites **réelles** doivent également être configurées chez les fournisseurs.
 - Tâches nécessitant approbation humaine.
-- Aucun paiement, email, contrat, publication ou exécution de code produit par un modèle.
+- Aucun paiement, email, contrat ou publication ; aucun code produit par un modèle exécuté hors du sandbox Docker approuvé pour ce lancement précis.
 
 ## Statut de vérification
 
@@ -60,3 +61,11 @@ Les prototypes MOCK approuvés peuvent être soumis à la file durable : verrou
 commun avec la CLI, manifeste persistant et reprise après publication interrompue.
 Le rapprochement humain des coûts inconnus est disponible avec référence d'audit.
 Voir `REVIEW_AND_DURABLE_PROTOTYPES.md` pour les limites et le blocage réseau GitHub.
+
+## Lot 3 — tests isolés (branche feat/lot-3-sandbox)
+
+Revue du socle : fuite de secrets via `repr(Settings)` et mise en dead-letter
+d'un travail dont l'ancien propriétaire était encore vivant, corrigées avec tests.
+Exécuteur Docker isolé, approbation d'exécution à usage unique, migration additive
+006 et commandes `sandbox`. Validé localement sous Python 3.11/3.12 avec
+PostgreSQL 16 et Docker réels ; CI distante de la branche à observer après push.

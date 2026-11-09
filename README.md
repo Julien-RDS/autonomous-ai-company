@@ -15,6 +15,7 @@
 | Budget / facturation | ✅ estimation locale | Ne remplace **pas** les plafonds opérateur, taxes, révisions tarifaires ou rapprochement factures |
 | Auto-attribution expérimentale | ✅ limitée | Routage sur validations humaines consignées ; sans résultats, rotation entre modèles |
 | Génération de fichiers de prototypes | ✅ sous validation | Pas d'exécution automatique du code généré |
+| Tests isolés des prototypes (Docker) | ✅ sous approbation dédiée | Une approbation d'exécution par lancement, lancé par un humain sur l'hôte ; Docker n'est pas une isolation absolue |
 | Tâches et résultats terrain | ✅ | Approbation et saisie humaine explicites |
 | Planification quotidienne | ✅ | Processus actif indispensable ; une seule instance prévue |
 | Dashboard web local | ✅ | Lecture seule, sans authentification, sur 127.0.0.1 uniquement |
@@ -56,7 +57,7 @@ python -m company prototype IDENTIFIANT_TACHE
 # Les fichiers apparaissent dans artifacts/prototypes/IDENTIFIANT_TACHE/
 ```
 
-**Important** : génération de fichiers uniquement, **pas** d'exécution, ni d'installation de dépendances, ni de publication. Examiner tout code avant de l'ouvrir ou de le faire tourner.
+**Important** : génération de fichiers uniquement, **pas** d'exécution, ni d'installation de dépendances, ni de publication. Examiner tout code avant de l'ouvrir ou de le faire tourner. Pour lancer ses tests, utiliser uniquement le sandbox Docker du Lot 3, avec une approbation d'exécution distincte (voir plus bas).
 
 ### Enregistrer une évaluation après un vrai test
 
@@ -199,3 +200,20 @@ Après `python -m company approve IDENTIFIANT_TACHE_PROTOTYPE`, soumettre avec
 `python -m company.worker enqueue-prototype IDENTIFIANT_TACHE_PROTOTYPE`.
 Le worker MOCK reprend une génération interrompue et conserve les fichiers déjà
 publiés. Voir [la revue et les commandes de rapprochement des coûts](docs/REVIEW_AND_DURABLE_PROTOTYPES.md).
+
+## Tests isolés des prototypes (Lot 3)
+
+Après génération et relecture, une **approbation d'exécution distincte et à usage
+unique** permet de lancer les tests `test_*.py` d'un prototype dans un conteneur
+Docker sans réseau, non root, en lecture seule et borné en durée, mémoire, CPU,
+processus et sortie :
+
+```bash
+# .env : SANDBOX_PYTHON_IMAGE_ID=sha256:... (ID vérifié d'une image locale)
+python -m company sandbox approve IDENTIFIANT_TACHE --reviewed --actor VOTRE_NOM --reason "code relu"
+python -m company sandbox run IDENTIFIANT_TACHE
+python -m company sandbox status IDENTIFIANT_TACHE
+```
+
+Le code généré n'est jamais exécuté sur l'hôte. Configuration, garanties et
+limites : [docs/LOT_3_SANDBOX.md](docs/LOT_3_SANDBOX.md).
