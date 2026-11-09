@@ -44,10 +44,19 @@ jobs:
         run: |
           docker pull "$SANDBOX_TEST_IMAGE"
           docker image inspect --format '{{.Id}}' "$SANDBOX_TEST_IMAGE"
+      - name: Sandbox diagnostics (informational, no prototype code)
+        # Declared capabilities and kernel cgroup values seen inside a probe container.
+        # Never fails the job by itself; the tests below decide.
+        env:
+          MOCK_MODE: 'true'
+          DATABASE_URL: sqlite:////tmp/sandbox-diagnostics.db
+        run: |
+          docker info --format 'cgroup v{{.CgroupVersion}} driver={{.CgroupDriver}} mem={{.MemoryLimit}} swap={{.SwapLimit}} pids={{.PidsLimit}} cfs={{.CPUCfsQuota}}' || true
+          python -m company sandbox probe --image-id "$(docker image inspect --format '{{.Id}}' "$SANDBOX_TEST_IMAGE")" || true
       - name: Test offline simulation
         env:
           MOCK_MODE: 'true'
           TEST_DATABASE_URL: postgresql+psycopg://company:ci-ephemeral-only@127.0.0.1:5432/company_test
           TEST_PG_CONTAINER: ${{ job.services.postgres.id }}
           TEST_SANDBOX_IMAGE: ${{ env.SANDBOX_TEST_IMAGE }}
-        run: python -m pytest -q -rs
+        run: python -m pytest -q -rfEs --tb=short
