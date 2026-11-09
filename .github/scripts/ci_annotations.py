@@ -12,12 +12,12 @@ def node_name(nodeid):
 
 def pytest_runtest_logreport(report):
     if report.failed:
-        print(f'::error title=pytest failure::{node_name(report.nodeid)} ({report.when})',flush=True)
+        print(f'\n::error title=pytest failure::{node_name(report.nodeid)} ({report.when})',flush=True)
 
 
 def pytest_collectreport(report):
     if report.failed:
-        print(f'::error title=pytest collection::{node_name(report.nodeid)}',flush=True)
+        print(f'\n::error title=pytest collection::{node_name(report.nodeid)}',flush=True)
 
 
 def probe_notice(path):
