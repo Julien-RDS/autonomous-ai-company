@@ -22,6 +22,8 @@ import json
 import os
 import re
 import shutil
+import stat
+import unicodedata
 import subprocess
 import tempfile
 import threading
@@ -32,7 +34,8 @@ from pathlib import Path
 
 from sqlalchemy import func, select, text
 
-from .database import Approval, AuditEvent, ExecutionApproval, SandboxRun, Task, new_id, utcnow
+from . import prototyping
+from .database import Approval, AuditEvent, ExecutionApproval, SandboxCleanup, SandboxRun, Task, new_id, utcnow
 from .prototyping import safe_files
 
 IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -117,10 +120,29 @@ def docker_binary() -> str:
 
 
 def workspace_base() -> Path:
-    base = Path(os.getenv("SANDBOX_WORKDIR") or Path(tempfile.gettempdir()) / "aac-sandbox").resolve()
+    # Never resolve symlinks silently: a link planted in a shared /tmp would
+    # redirect the workspaces to a directory controlled by someone else.
+    base = Path(os.path.abspath(os.getenv("SANDBOX_WORKDIR") or Path(tempfile.gettempdir()) / "aac-sandbox"))
     # The path is embedded in a --mount specification: refuse its separators.
     if any(c in str(base) for c in ",=\n\"'"):
         raise SandboxRefused("SANDBOX_WORKDIR contient un caractère interdit")
+    return base
+
+
+def secure_base(create: bool = True) -> Path | None:
+    """Workspace root must be a real directory, owned by us, mode 0700, without symlink in its path."""
+    base = workspace_base()
+    try:
+        info = os.lstat(base)
+    except FileNotFoundError:
+        if not create:
+            return None
+        base.mkdir(mode=0o700, parents=True)
+        info = os.lstat(base)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or os.path.realpath(base) != str(base):
+        raise SandboxRefused("SANDBOX_WORKDIR doit être un répertoire réel, sans lien symbolique")
+    if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise SandboxRefused("SANDBOX_WORKDIR doit appartenir à l'utilisateur courant avec des droits 0700")
     return base
 
 
@@ -218,10 +240,109 @@ def _remove(docker: str, name: str) -> None:
         pass  # sandbox cleanup retries later from the label
 
 
+# JSON keys of `docker info --format "{{json .}}"` (note: CpuCfsQuota, not the Go field name).
+REQUIRED_CAPABILITIES = ("MemoryLimit", "SwapLimit", "PidsLimit", "CpuCfsQuota")
+
+
+def docker_capabilities(docker: str | None = None) -> dict:
+    """What the daemon declares. Declared support is necessary, not sufficient."""
+    docker = docker or docker_binary()
+    try:
+        info = _docker(docker, "info", "--format", "{{json .}}")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"reachable": False, "missing": list(REQUIRED_CAPABILITIES), "error": type(exc).__name__}
+    if info.returncode != 0:
+        return {"reachable": False, "missing": list(REQUIRED_CAPABILITIES), "error": "démon Docker injoignable"}
+    try:
+        data = json.loads(info.stdout or b"{}")
+    except ValueError:
+        data = {}
+    security = " ".join(data.get("SecurityOptions") or [])
+    return {"reachable": True, "missing": [k for k in REQUIRED_CAPABILITIES if data.get(k) is not True],
+            "cgroup_version": data.get("CgroupVersion"), "cgroup_driver": data.get("CgroupDriver"),
+            "rootless": "rootless" in security, "server_version": data.get("ServerVersion"), "error": None}
+
+
 def resource_limits_supported(docker: str) -> bool:
-    probe = _docker(docker, 'info', '--format',
-                    '{{json .MemoryLimit}} {{json .SwapLimit}} {{json .PidsLimit}} {{json .CPUCfsQuota}}')
-    return probe.returncode == 0 and probe.stdout.decode().strip().split() == ['true'] * 4
+    caps = docker_capabilities(docker)
+    return caps["reachable"] and not caps["missing"]
+
+
+PROBE_SCRIPT = (
+    "import json, os\n"
+    "def r(*paths):\n"
+    "    for p in paths:\n"
+    "        try:\n"
+    "            return open(p).read().strip()\n"
+    "        except OSError:\n"
+    "            pass\n"
+    "print(json.dumps({'memory': r('/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory/memory.limit_in_bytes'),\n"
+    " 'swap_v2': r('/sys/fs/cgroup/memory.swap.max'),\n"
+    " 'memsw_v1': r('/sys/fs/cgroup/memory/memory.memsw.limit_in_bytes'),\n"
+    " 'pids': r('/sys/fs/cgroup/pids.max', '/sys/fs/cgroup/pids/pids.max'),\n"
+    " 'cpu_v2': r('/sys/fs/cgroup/cpu.max'),\n"
+    " 'quota_v1': r('/sys/fs/cgroup/cpu/cpu.cfs_quota_us', '/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us'),\n"
+    " 'period_v1': r('/sys/fs/cgroup/cpu/cpu.cfs_period_us', '/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us'),\n"
+    " 'uid': os.getuid()}))\n")
+PROBE_PROFILE = Profile(name="limits-probe", argv=("python", "-I", "-B", "-c", PROBE_SCRIPT),
+                        env=(("HOME", "/tmp"), ("LANG", "C.UTF-8")))
+
+
+def _bytes(size: str) -> int:
+    match = re.fullmatch(r"(\d+)([kmg]?)", size.strip().lower())
+    if not match:
+        raise ValueError("Taille mémoire invalide")
+    return int(match.group(1)) * {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[match.group(2)]
+
+
+def limits_mismatch(observed: dict, limits: Limits) -> list[str]:
+    """Compare kernel cgroup values seen INSIDE the container with what was requested."""
+    problems = []
+    memory = _bytes(limits.memory)
+    if observed.get("memory") != str(memory):
+        problems.append("mémoire")
+    if observed.get("swap_v2") is not None:
+        if observed.get("swap_v2") != "0":
+            problems.append("swap")
+    elif observed.get("memsw_v1") != str(memory):
+        problems.append("swap")
+    if observed.get("pids") != str(limits.pids):
+        problems.append("processus")
+    cpu = observed.get("cpu_v2")
+    quota, period = (cpu.split() + [""])[:2] if cpu else (observed.get("quota_v1"), observed.get("period_v1"))
+    try:
+        if abs(int(quota) / int(period) - float(limits.cpus)) > 0.01:
+            problems.append("CPU")
+    except (TypeError, ValueError, ZeroDivisionError):
+        problems.append("CPU")
+    if observed.get("uid") in (None, 0):
+        problems.append("utilisateur non root")
+    return problems
+
+
+def probe_enforcement(docker: str, workspace: Path, image_id: str, limits: Limits, run_id: str) -> list[str]:
+    """Run a fixed application probe with the SAME options and read the effective limits."""
+    name = f"{NAME_PREFIX}{run_id}-probe"
+    deadline = int(time.time()) + 30 + CLEANUP_GRACE_S
+    try:
+        created = _docker(docker, *docker_create_argv(docker, name, workspace, PROBE_PROFILE, image_id,
+                                                      limits, deadline)[1:])
+        if created.returncode != 0:
+            return ["conteneur de vérification non créé"]
+        started = _docker(docker, "start", "--attach", name, timeout=30)
+        if started.returncode != 0:
+            return ["vérification des limites impossible"]
+        return limits_mismatch(json.loads(started.stdout.decode().strip().splitlines()[-1]), limits)
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return ["vérification des limites impossible"]
+    finally:
+        _remove(docker, name)
+
+
+def display_safe(text: str) -> str:
+    """Untrusted output for a terminal: neutralize escape/control characters (ANSI, OSC...)."""
+    return "".join(c if c in "\n\t" or not unicodedata.category(c).startswith("C")
+                   else f"\\x{ord(c):02x}" if ord(c) < 256 else f"\\u{ord(c):04x}" for c in text)
 
 
 def execute(files: list[dict], profile_name: str, image_id: str, *, run_id: str | None = None,
@@ -235,8 +356,7 @@ def execute(files: list[dict], profile_name: str, image_id: str, *, run_id: str 
         raise SandboxRefused("Identifiant d'exécution invalide")
     docker = docker_binary()
     name = NAME_PREFIX + run_id
-    base = workspace_base()
-    base.mkdir(mode=0o700, parents=True, exist_ok=True)
+    base = secure_base()
     workspace = base / run_id
     started = time.monotonic()
     sinks = (_Sink(limits.stored_bytes_per_stream), _Sink(limits.stored_bytes_per_stream))
@@ -259,6 +379,11 @@ def execute(files: list[dict], profile_name: str, image_id: str, *, run_id: str 
         for path in [workspace, *workspace.rglob("*")]:
             # Readable by the unprivileged container user; never writable.
             path.chmod(0o555 if path.is_dir() else 0o444)
+        missing = probe_enforcement(docker, workspace, image_id, limits, run_id)
+        if missing:
+            # An accepted Docker option is not proof: the kernel values did not match.
+            return result("ERROR", detail="limites non appliquées par le noyau (" + ", ".join(missing)
+                          + ") ; exécution refusée")
         deadline = int(time.time()) + limits.timeout_s + CLEANUP_GRACE_S
         create = _docker(docker, *docker_create_argv(docker, name, workspace, profile, image_id, limits,
                                                      deadline)[1:])
@@ -357,7 +482,17 @@ def approve_execution(sessions, task_id: str, *, profile: str, image_id: str, ac
         raise SandboxRefused("Motif de l'autorisation requis (500 caractères maximum)")
     with sessions.begin() as db:
         _lock(db, task_id)
-        digest = manifest_digest(_generated_manifest(db, task_id))
+        files = _generated_manifest(db, task_id)
+        reviewed = prototyping.ROOT / "artifacts" / "prototypes" / task_id
+        if not reviewed.is_dir():
+            raise SandboxRefused("Fichiers à relire introuvables sur disque : autorisation impossible")
+        try:
+            # The human reviews these files; they must be exactly what would run.
+            prototyping.verify_artifacts(reviewed, files)
+        except (ValueError, OSError, UnicodeDecodeError):
+            raise SandboxRefused("Fichiers sur disque différents du contenu qui serait exécuté : "
+                                 "relecture invalide, aucune autorisation") from None
+        digest = manifest_digest(files)
         approval = ExecutionApproval(task_id=task_id, manifest_sha256=digest, profile=profile,
                                      image_id=image_id, actor=actor, reason=reason)
         db.add(approval)
@@ -366,10 +501,26 @@ def approve_execution(sessions, task_id: str, *, profile: str, image_id: str, ac
         return approval.id
 
 
+def preflight(docker: str | None = None) -> None:
+    """Refuse BEFORE consuming an approval when this host cannot isolate correctly."""
+    secure_base()
+    caps = docker_capabilities(docker)
+    if not caps["reachable"]:
+        raise SandboxRefused("Démon Docker injoignable : aucune autorisation consommée")
+    if caps["missing"]:
+        raise SandboxRefused("Docker ne peut pas imposer : " + ", ".join(caps["missing"])
+                             + " ; aucune autorisation consommée (voir sandbox doctor)")
+
+
 def run_approved(sessions, task_id: str, *, images: dict[str, str] | None = None,
-                 limits: Limits = DEFAULT_LIMITS, executor=execute, on_started=None) -> SandboxRun:
+                 limits: Limits = DEFAULT_LIMITS, executor=execute, on_started=None,
+                 check=None) -> SandboxRun:
     """Consume one matching approval, execute once, persist bounded results."""
     images = allowed_images() if images is None else images
+    if check is None and executor is execute:
+        check = preflight
+    if check is not None:
+        check()
     run_id = new_id()
     with sessions.begin() as db:
         _lock(db, task_id)
@@ -408,31 +559,66 @@ def run_approved(sessions, task_id: str, *, images: dict[str, str] | None = None
             run.stdout, run.stderr, run.detail = outcome.stdout, outcome.stderr, outcome.detail
             run.finished_at = utcnow()
             db.add(AuditEvent(entity_id=run_id, kind=f"sandbox_{outcome.state.lower()}"))
+        else:
+            # Marked INTERRUPTED meanwhile: keep that verdict, but never drop the evidence.
+            run.exit_code = outcome.exit_code if run.exit_code is None else run.exit_code
+            run.duration_ms = outcome.duration_ms if run.duration_ms is None else run.duration_ms
+            run.output_bytes, run.truncated = outcome.output_bytes, outcome.truncated
+            run.stdout, run.stderr = outcome.stdout, outcome.stderr
+            run.detail = f"{run.detail[:120]} | résultat tardif : {outcome.state} {outcome.detail}"[:250]
+            db.add(AuditEvent(entity_id=run_id, kind="sandbox_late_result"))
         db.flush()
         db.expunge(run)
     return run
 
 
-def cleanup(sessions=None, *, force: bool = False, now: float | None = None) -> dict:
+def _record_cleanup(db, *, run_id, container, actor, reason, previous, outcome, container_removed,
+                    workspace_removed):
+    entry = SandboxCleanup(run_id=run_id, container_name=container, actor=actor, reason=reason[:500],
+                           previous_state=previous, outcome=outcome, container_removed=container_removed,
+                           workspace_removed=workspace_removed)
+    db.add(entry)
+    db.flush()
+    db.add(AuditEvent(entity_id=run_id or entry.id, kind=f"sandbox_cleanup_{outcome}"[:40]))
+
+
+def _containers(docker: str) -> dict[str, dict]:
+    listing = _docker(docker, "ps", "--all", "--filter", f"label={LABEL}=1",
+                      "--format", '{{.Names}}\t{{.Label "aac.deadline"}}\t{{.State}}')
+    if listing.returncode != 0:
+        raise SandboxError("Liste des conteneurs Docker indisponible")
+    found = {}
+    for line in listing.stdout.decode().splitlines():
+        name, deadline, state = (line.split("\t") + ["", ""])[:3]
+        if name.startswith(NAME_PREFIX):
+            found[name] = {"deadline": int(deadline) if deadline.isdigit() else None, "state": state}
+    return found
+
+
+# A container that is created/starting/restarting may belong to a live parent.
+LIVE_STATES = ("created", "running", "restarting")
+
+
+def _run_of(container: str) -> str | None:
+    core = container[len(NAME_PREFIX):].removesuffix("-probe")
+    return core if re.fullmatch(r"[0-9a-f]{32}", core) else None
+
+
+def cleanup(sessions=None, *, force: bool = False, now: float | None = None,
+            actor: str = "cli:cleanup", reason: str = "nettoyage des orphelins échus") -> dict:
     """Remove leftover labelled containers/workspaces; mark stale RUNNING records INTERRUPTED.
 
     Without `force`, only containers past their deadline label are removed. `force`
     removes every sandbox container: use only when no sandbox run is in progress.
+    Never consumes an approval and never starts a test. Each action is audited.
     """
     docker, now = docker_binary(), time.time() if now is None else now
     removed = []
-    listing = _docker(docker, "ps", "--all", "--filter", f"label={LABEL}=1",
-                      "--format", '{{.Names}}\t{{.Label "aac.deadline"}}')
-    if listing.returncode != 0:
-        raise SandboxError("Liste des conteneurs Docker indisponible")
-    for line in listing.stdout.decode().splitlines():
-        name, _, deadline = line.partition("\t")
-        if not name.startswith(NAME_PREFIX):
-            continue
-        if force or not deadline.isdigit() or int(deadline) <= now:
+    for name, info in _containers(docker).items():
+        if force or info["deadline"] is None or info["deadline"] <= now:
             _remove(docker, name)
             removed.append(name)
-    interrupted = []
+    interrupted, records = [], []
     if sessions is not None:
         moment = datetime.fromtimestamp(now, timezone.utc)
         with sessions.begin() as db:
@@ -443,10 +629,102 @@ def cleanup(sessions=None, *, force: bool = False, now: float | None = None) -> 
                     run.detail = "exécution interrompue : approbation consommée, non rejouée"
                     db.add(AuditEvent(entity_id=run.id, kind="sandbox_interrupted"))
                     interrupted.append(run.id)
-    base = workspace_base()
-    if base.is_dir():
-        stale = {name[len(NAME_PREFIX):] for name in removed} | set(interrupted)
+            known = set(db.scalars(select(SandboxRun.id)).all())
+            for name in removed:
+                records.append((name, _run_of(name)))
+            for run_id in interrupted:
+                if run_id not in {r for _, r in records}:
+                    records.append((NAME_PREFIX + run_id, run_id))
+            for name, run_id in records:
+                _record_cleanup(db, run_id=run_id if run_id in known else None, container=name, actor=actor,
+                                reason=reason, previous="RUNNING" if run_id in interrupted else None,
+                                outcome="interrupted" if run_id in interrupted else "container_removed",
+                                container_removed=name in removed, workspace_removed=False)
+    base = secure_base(create=False)
+    if base is not None:
+        stale = {_run_of(name) for name in removed} | set(interrupted)
         for path in base.iterdir():
             if force or path.name in stale:
                 _discard_workspace(path)
     return {"containers_removed": removed, "runs_interrupted": interrupted}
+
+
+def diagnose(sessions, *, now: float | None = None) -> dict:
+    """Read-only: Docker capabilities and the status of RUNNING runs and labelled containers."""
+    docker, now = docker_binary(), time.time() if now is None else now
+    caps = docker_capabilities(docker)
+    containers = _containers(docker) if caps["reachable"] else {}
+    with sessions() as db:
+        running = db.scalars(select(SandboxRun).where(SandboxRun.state == "RUNNING")
+                             .order_by(SandboxRun.started_at)).all()
+        known = set(db.scalars(select(SandboxRun.id)).all())
+    runs = []
+    for run in running:
+        started = run.started_at.replace(tzinfo=timezone.utc) if run.started_at.tzinfo is None else run.started_at
+        deadline = started.timestamp() + run.timeout_s + CLEANUP_GRACE_S
+        container = containers.get(run.container_name)
+        if not caps["reachable"]:
+            status = "inconnu (Docker injoignable)"
+        elif deadline <= now:
+            status = "orphelin : échéance dépassée"
+        elif container is None:
+            status = "orphelin : conteneur absent"
+        elif container["state"] not in LIVE_STATES:
+            status = "orphelin : conteneur arrêté"
+        else:
+            status = "actif"
+        runs.append({"run_id": run.id, "task_id": run.task_id, "attempt": run.attempt, "status": status,
+                     "container": container["state"] if container else None})
+    unknown = [n for n in containers if _run_of(n) not in known]
+    return {"capabilities": caps, "running": runs, "unknown_containers": unknown}
+
+
+def cleanup_run(sessions, run_id: str, *, actor: str, reason: str, now: float | None = None) -> dict:
+    """Targeted cleanup of ONE run: its container(s) and workspace only. Audited, never re-executes."""
+    if not re.fullmatch(r"[0-9a-f]{32}", run_id or ""):
+        raise SandboxRefused("Identifiant d'exécution invalide")
+    actor, reason = actor.strip(), reason.strip()
+    if not actor or len(actor) > 100 or not actor.isprintable():
+        raise SandboxRefused("Identité humaine requise (100 caractères maximum)")
+    if not reason or len(reason) > 500 or not reason.isprintable():
+        raise SandboxRefused("Motif requis (500 caractères maximum)")
+    docker, now = docker_binary(), time.time() if now is None else now
+    with sessions() as db:
+        run = db.get(SandboxRun, run_id)
+        if run is None:
+            raise SandboxRefused("Exécution inconnue")
+        previous = run.state
+    names = [NAME_PREFIX + run_id, f"{NAME_PREFIX}{run_id}-probe"]
+    containers = {n: c for n, c in _containers(docker).items() if n in names}
+    active = [n for n, c in containers.items()
+              if c["state"] in LIVE_STATES and (c["deadline"] is None or c["deadline"] > now)]
+    with sessions.begin() as db:
+        if active:
+            _record_cleanup(db, run_id=run_id, container=names[0], actor=actor, reason=reason,
+                            previous=previous, outcome="refused_active", container_removed=False,
+                            workspace_removed=False)
+            refused = True
+        else:
+            refused = False
+    if refused:
+        raise SandboxRefused("Conteneur encore actif avant échéance : nettoyage refusé, réessayer après l'échéance")
+    for name in containers:
+        _remove(docker, name)
+    still = set(_containers(docker)) & set(names)
+    workspace_removed = False
+    base = secure_base(create=False)
+    if base is not None and (base / run_id).exists():
+        _discard_workspace(base / run_id)
+        workspace_removed = not (base / run_id).exists()
+    with sessions.begin() as db:
+        run = db.get(SandboxRun, run_id)
+        if run.state == "RUNNING":
+            run.state, run.finished_at = "INTERRUPTED", utcnow()
+            run.detail = "nettoyage ciblé : approbation consommée, aucune relance"
+        outcome = ("cleanup_failed" if still else "interrupted" if previous == "RUNNING"
+                   else "cleaned" if containers or workspace_removed else "nothing_to_clean")
+        _record_cleanup(db, run_id=run_id, container=names[0], actor=actor, reason=reason, previous=previous,
+                        outcome=outcome, container_removed=bool(containers) and not still,
+                        workspace_removed=workspace_removed)
+    return {"run_id": run_id, "previous_state": previous, "outcome": outcome,
+            "containers_removed": sorted(set(containers) - still), "workspace_removed": workspace_removed}

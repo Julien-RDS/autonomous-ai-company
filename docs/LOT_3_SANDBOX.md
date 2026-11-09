@@ -179,3 +179,89 @@ redémarrage PostgreSQL ; le passage 3.11 ne le lance pas depuis le conteneur.
 La CI se déclenche aussi sur push de feat/lot-3-sandbox pour pouvoir vérifier
 l'isolation sur un runner compatible avant la création de PR. Aucun résultat
 GitHub distant n'est affirmé sans observation.
+
+## Validation réelle et revue critique (9 novembre 2026, suite)
+
+### CI distante observée
+
+Run « Tests » n° 8 (`42589954340`) sur `706731e` : **terminé avec succès**, jobs
+`tests (3.11)` et `tests (3.12)`. Les journaux exigent une authentification GitHub et
+n'ont pas pu être lus anonymement : le décompte réussis/ignorés n'est pas observé.
+Inférence (non observation) : `TEST_SANDBOX_IMAGE` est défini en CI et la fixture
+`image_id` échoue (sans skip) si l'image manque ; un refus du sandbox aurait fait
+échouer les tests attendant `PASSED`. Un run vert implique donc très probablement
+que les tests Docker ont été exécutés sur le runner GitHub.
+
+### Hôte de validation
+
+Docker Engine 29.1 **rootful**, cgroup v1 (cgroupfs), 1 CPU ; PostgreSQL 16 réel ;
+image de test Python 3.12 construite localement (Docker Hub inaccessible depuis cet
+environnement). Les limites ont été **mesurées dans le conteneur**, pas seulement
+déclarées : `memory.limit_in_bytes` = 268435456, `memsw` identique (pas de swap),
+`pids.max` = 64 (fork bloqué après 62 enfants), quota CPU 50000/100000 avec 4
+processus saturants mesurés à 0,49 CPU, dépassement mémoire tué (OOM, code 137).
+
+### Défauts reproduits puis corrigés (tests de régression)
+
+| # | Défaut reproduit | Correction |
+|---|---|---|
+| A | `static-html` acceptait 7 types de ressources externes sur 8 (srcset, meta refresh, action de formulaire, `url()` CSS, `@import`, `<object data>`) et n'analysait que `index.html` | Toutes les pages HTML et feuilles CSS ; attributs d'URL, `srcset`, `style`, `<style>`, meta refresh ; `<base>` et liens symboliques refusés |
+| B | La base des espaces de travail suivait un lien symbolique et acceptait un répertoire `0777` (`/tmp` partagé) | Répertoire réel exigé, sans lien, appartenant à l'utilisateur, droits `0700` ; refus avant tout appel Docker |
+| C | La CLI affichait les sorties non fiables brutes (séquences ANSI/OSC, inversion bidi) | `display_safe` neutralise les caractères de contrôle à l'affichage ; les données stockées restent intactes |
+| D | L'approbation portait sur le manifeste en base alors que l'humain relit les fichiers sur disque | Approbation refusée si les fichiers relus diffèrent du contenu qui serait exécuté, ou sont absents ; le SHA-256 autorisé est affiché |
+| E | Sur un démon incapable d'imposer les limites, le refus consommait l'approbation | Contrôle préalable (base, démon, capacités) **avant** consommation |
+| F | Un résultat arrivé après un nettoyage forcé était jeté | Résultat tardif conservé, état `INTERRUPTED` maintenu, audit `sandbox_late_result` |
+| G | Un conteneur encore `created` (démarrage) était classé orphelin et nettoyable | `created`/`running`/`restarting` avant échéance = actif ; nettoyage refusé |
+
+En plus des capacités déclarées par `docker info`, chaque exécution lance d'abord un
+**conteneur sonde** fixe (code de l'application, mêmes options) qui lit les valeurs
+cgroup effectives. Si mémoire, swap, PID, quota CPU ou utilisateur non root ne
+correspondent pas exactement à la demande, l'exécution est refusée (`ERROR`) avant
+que le moindre test soit lancé. Un test retire volontairement `--pids-limit` et
+vérifie ce refus. Coût : un conteneur supplémentaire d'environ une demi-seconde.
+
+### Diagnostic et récupération
+
+```bash
+python -m company sandbox doctor                      # lecture seule
+python -m company sandbox status TASK                 # affiche les identifiants run=
+python -m company sandbox cleanup --run RUN_ID --actor julien --reason "parent tué"
+python -m company sandbox cleanup                     # orphelins échus, audités
+```
+
+`doctor` affiche la joignabilité du démon, la version cgroup, le mode rootless, les
+capacités manquantes, chaque run `RUNNING` (actif, orphelin : conteneur absent,
+arrêté ou échéance dépassée) et les conteneurs sandbox sans run connu.
+
+`cleanup --run` ne touche que le conteneur, la sonde et l'espace de travail de ce run.
+Il refuse tant que le conteneur est actif avant son échéance (60 s + 120 s de grâce).
+Chaque décision, y compris un refus, est enregistrée dans `sandbox_cleanups`
+(migration 008 : acteur, motif, état précédent, résultat, conteneur et espace
+supprimés) et dans `audit_events`. Aucun nettoyage ne consomme d'approbation ni ne
+relance de test : un run interrompu reste interrompu, une nouvelle exécution exige
+une nouvelle approbation.
+
+### Résultats exacts
+
+Python 3.12.3 et 3.11.18, PostgreSQL 16 réel, Docker réel, `TEST_SANDBOX_IMAGE` défini :
+**150 réussis, 12 ignorés, 0 échec** pour chaque version. Ignorés : 11 variantes
+SQLite de tests réservés à PostgreSQL ; 1 arrêt/redémarrage du serveur PostgreSQL
+(`TEST_PG_CONTAINER` non disponible ici). Aucun conteneur sandbox restant après la
+suite. Validés en conteneur réel : succès, échec, zéro test découvert, mémoire, PID,
+CPU, timeout avec SIGTERM ignoré, réseau, secrets, socket Docker, lecture seule,
+non-root, sorties bornées, erreur Docker, interruption (`os._exit`) et `SIGKILL` du
+parent puis nettoyage ciblé, deux exécutions concurrentes isolées, profil `static-html`.
+
+### Limites restantes
+
+- Validation faite en cgroup v1 rootful ; en cgroup v2 et rootless avec délégation,
+  la sonde lit `memory.max`, `memory.swap.max`, `pids.max`, `cpu.max` : chemin
+  couvert par des tests unitaires, non exécuté ici sur un vrai hôte cgroup v2.
+- Docker reste une isolation partielle (noyau partagé, démon root). La CLI pilote
+  un démon équivalent à root : à lancer par un humain sur l'hôte.
+- `static-html` est structurel : les URL construites par JavaScript à l'exécution,
+  les attributs exotiques non listés et les failles XSS ne sont pas détectés.
+- La sonde et l'exécution sont deux conteneurs successifs : un changement de
+  configuration du démon entre les deux n'est pas exclu (fenêtre d'une seconde).
+- Le digest d'image par défaut de la CI n'a pas pu être revérifié ici (registre
+  inaccessible).

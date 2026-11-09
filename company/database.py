@@ -196,6 +196,21 @@ class SandboxRun(Base):
     )
 
 
+class SandboxCleanup(Base):
+    """Audit of each cleanup decision and its result; never authorizes an execution."""
+    __tablename__ = "sandbox_cleanups"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=new_id)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("sandbox_runs.id"), index=True, nullable=True)
+    container_name: Mapped[str] = mapped_column(String(80))
+    actor: Mapped[str] = mapped_column(String(100))
+    reason: Mapped[str] = mapped_column(String(500))
+    previous_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(40))
+    container_removed: Mapped[bool] = mapped_column(default=False)
+    workspace_removed: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class WorkReview(Base):
     __tablename__ = 'work_reviews'
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=new_id)
