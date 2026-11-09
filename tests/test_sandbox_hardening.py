@@ -206,6 +206,9 @@ def _orphan(sessions, task_id, monkeypatch, tmp_path):
 
 
 def test_targeted_cleanup_is_audited_and_never_reexecutes(migrated_engine, tmp_path, monkeypatch):
+    # This is a simulated-daemon unit test; do not depend on host Docker access.
+    monkeypatch.setattr(sandbox, "docker_capabilities",
+                        lambda docker=None: {"reachable": True, "missing": [], "error": None})
     sessions, task_id = generated_task(migrated_engine, tmp_path, monkeypatch)
     run_id = _orphan(sessions, task_id, monkeypatch, tmp_path)
     workspace = sandbox.secure_base() / run_id
@@ -244,6 +247,9 @@ def test_targeted_cleanup_is_audited_and_never_reexecutes(migrated_engine, tmp_p
 
 
 def test_targeted_cleanup_never_touches_another_run(migrated_engine, tmp_path, monkeypatch):
+    # This is a simulated-daemon unit test; do not depend on host Docker access.
+    monkeypatch.setattr(sandbox, "docker_capabilities",
+                        lambda docker=None: {"reachable": True, "missing": [], "error": None})
     sessions, task_id = generated_task(migrated_engine, tmp_path, monkeypatch)
     run_id = _orphan(sessions, task_id, monkeypatch, tmp_path)
     other = "b" * 32
