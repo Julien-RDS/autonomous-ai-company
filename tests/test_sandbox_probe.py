@@ -69,3 +69,28 @@ def test_failed_create_does_not_remove_an_existing_probe(tmp_path, monkeypatch):
     problems=sandbox.probe_enforcement('docker',tmp_path,'sha256:'+'a'*64,sandbox.DEFAULT_LIMITS,'b'*32)
     assert problems==['conteneur de vérification non créé']
     assert removed==[]
+
+
+def test_concurrent_secure_base_creation(tmp_path, monkeypatch):
+    import os
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    base=tmp_path/'shared'
+    monkeypatch.setenv('SANDBOX_WORKDIR',str(base))
+    original=os.lstat
+    barrier=threading.Barrier(2)
+    local=threading.local()
+    def lstat(path,*args,**kwargs):
+        if str(path)==str(base) and not getattr(local,'seen',False):
+            local.seen=True
+            try:
+                return original(path,*args,**kwargs)
+            except FileNotFoundError:
+                barrier.wait(timeout=5)
+                raise
+        return original(path,*args,**kwargs)
+    monkeypatch.setattr(os,'lstat',lstat)
+    with ThreadPoolExecutor(2) as pool:
+        results=list(pool.map(lambda _:sandbox.secure_base(),range(2)))
+    assert results==[base,base]
+    assert base.stat().st_mode & 0o777 == 0o700
