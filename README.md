@@ -223,3 +223,10 @@ limites : [docs/LOT_3_SANDBOX.md](docs/LOT_3_SANDBOX.md).
 Les résumés de tests déclarés et leur provenance sont visibles dans le dashboard.
 La récupération confirme la disparition des conteneurs avant suppression des
 workspaces. Voir [résultats et récupération](docs/SANDBOX_RESULTS_RECOVERY.md).
+
+## Supervision locale (lecture seule)
+
+`python -m company dashboard` puis http://127.0.0.1:8000 : vue d'ensemble, réunions et
+décisions, tâches, file, exécutions sandbox et budget. Aucune action depuis le web : les
+interventions nécessaires sont indiquées sous forme de commandes CLI avec leur effet.
+Détails : [docs/SUPERVISION.md](docs/SUPERVISION.md).
