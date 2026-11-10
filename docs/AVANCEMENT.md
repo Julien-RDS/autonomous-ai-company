@@ -93,3 +93,10 @@ Migration 009 : version des validateurs, résumés structurés non fiables et pr
 d'exécution conservées. Nettoyage sérialisé avec intention persistante et absence
 Docker confirmée avant suppression des fichiers. Voir SANDBOX_RESULTS_RECOVERY.md.
 La validation de l'isolation Docker reste bloquée sur l'hôte cloud sans cgroups.
+
+## Supervision en lecture seule (feat/supervision-dashboard)
+
+Pages de supervision server-side sans JavaScript (CSP sans script), routes GET uniquement,
+commandes CLI affichées pour chaque intervention, coûts distingués par certitude, contenus
+non fiables échappés, aucun chemin accepté du navigateur. 201 réussis, 12 ignorés, 0 échec
+(3.11 et 3.12). Captures WeasyPrint ; pas de navigateur réel disponible. Voir SUPERVISION.md.
