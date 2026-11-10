@@ -5,6 +5,7 @@ from html import escape
 import json
 
 from fastapi import FastAPI
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import select
 
 from .database import Run, Task, SandboxRun
@@ -12,6 +13,8 @@ from .database import Run, Task, SandboxRun
 
 def create_app(sessions, settings, budget) -> FastAPI:
     app = FastAPI(title="Autonomous AI Company — suivi local")
+    # Reject DNS-rebinding Host headers even on read-only GET routes.
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
     @app.get("/api/status")
     def status():
