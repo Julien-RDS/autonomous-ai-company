@@ -227,6 +227,9 @@ workspaces. Voir [résultats et récupération](docs/SANDBOX_RESULTS_RECOVERY.md
 ## Supervision locale (lecture seule)
 
 `python -m company dashboard` puis http://127.0.0.1:8000 : vue d'ensemble, réunions et
-décisions, tâches, file, exécutions sandbox et budget. Aucune action depuis le web : les
-interventions nécessaires sont indiquées sous forme de commandes CLI avec leur effet.
-Détails : [docs/SUPERVISION.md](docs/SUPERVISION.md).
+décisions, tâches, file, exécutions sandbox et budget. Par défaut, aucune action depuis le web : les interventions nécessaires sont indiquées
+sous forme de commandes CLI. Une console administrateur locale optionnelle sous
+`/actions` peut activer des opérations distinctes, après configuration de deux secrets
+et d'une liste explicite de permissions. Son accès reste limité à localhost ; ne pas
+exposer ce serveur sur Internet. Détails : [docs/SUPERVISION.md](docs/SUPERVISION.md)
+et [docs/WEB_ACTIONS.md](docs/WEB_ACTIONS.md).
