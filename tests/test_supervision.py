@@ -328,3 +328,48 @@ def test_real_mode_is_flagged(migrated_engine, tmp_path, monkeypatch):
     _, _, _, client = build(migrated_engine, tmp_path, monkeypatch, settings_overrides={"mock": False})
     page = client.get("/").text
     assert "API RÉELLES" in page and "SIMULATION (MOCK)" not in page
+
+
+@pytest.mark.parametrize("data", [
+    {"proposals": 42}, {"votes": True}, {"errors": 42},
+    {"sources": {"openai": {"unexpected": "shape"}}},
+    {"sources": {"openai": 42}},
+])
+def test_malformed_meeting_fields_do_not_break_supervision(migrated_engine, tmp_path, monkeypatch, data):
+    sessions, _, _, client = build(migrated_engine, tmp_path, monkeypatch)
+    with sessions.begin() as db:
+        run = Run(mission="Malformed imported report", mode="mock", status="failed", result_json=json.dumps(data))
+        db.add(run)
+        db.flush()
+        run_id = run.id
+    before = fingerprint(migrated_engine)
+    assert client.get(f"/runs/{run_id}").status_code == 200
+    assert fingerprint(migrated_engine) == before
+
+
+def test_invalid_sandbox_summary_does_not_break_json_api(migrated_engine, tmp_path, monkeypatch):
+    sessions, settings, budget, client = build(migrated_engine, tmp_path, monkeypatch)
+    seed(sessions, settings, budget, tmp_path)
+    with sessions.begin() as db:
+        db.scalar(select(SandboxRun)).summary_json = "{invalid"
+    response = client.get("/api/sandbox-runs")
+    assert response.status_code == 200
+    assert response.json()[0]["summary"] is None
+
+
+def test_measure_command_can_be_copied_without_shell_pipe():
+    from shlex import split
+    task = Task(id="a" * 32, category="validation", status="approved")
+    markup = supervision.task_action(task, True, False, False)
+    command = html.unescape(re.search(r"<code>(.*?)</code>", markup).group(1))
+    assert "|" not in command
+    args = split(command)
+    assert args[args.index("--success") + 1] in ("0", "1")
+
+
+def test_html_demo_suggests_static_validation_not_python_tests():
+    task = Task(id="a" * 32, category="prototype", status="awaiting_evaluation",
+                artifact_manifest=json.dumps({"files": [{"path": "index.html", "content": "<html></html>"}]}))
+    markup = html.unescape(supervision.task_action(task, True, False, True))
+    assert "--profile static-html" in markup
+    assert "SANDBOX_PYTHON_IMAGE_ID" in markup

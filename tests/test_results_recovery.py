@@ -81,9 +81,13 @@ def test_result_evidence_and_legacy_approval(migrated_engine,tmp_path,monkeypatc
     def executor(*a,**kwargs):
         with sessions.begin() as db:
             r=db.get(SandboxRun,kwargs['run_id']); r.state='INTERRUPTED'; r.stdout='previous evidence'
+            r.output_bytes=1000; r.truncated=True
+            r.summary_json='{"kind":"static","structure_valid":true}'
         return sandbox.SandboxResult('FAILED',1,10,'late evidence','',13,False)
     run=sandbox.run_approved(sessions,task,images={'python-unittest':FAKE_IMAGE},executor=executor)
     assert run.state=='INTERRUPTED' and run.stdout=='previous evidence'
+    assert run.output_bytes==1000 and run.truncated
+    assert json.loads(run.summary_json)['kind']=='static'
     with sessions() as db:
         evidence=db.scalar(select(SandboxEvidence))
         assert json.loads(evidence.outcome_json)['stdout']=='late evidence'

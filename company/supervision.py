@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal
 from html import escape
@@ -182,6 +181,11 @@ def loads(raw: str | None, default):
         return default
 
 
+def items(value, limit: int) -> list:
+    """Bounded display of a JSON array; imported or damaged fields may have any type."""
+    return value[:limit] if isinstance(value, list) else []
+
+
 def summary_text(raw: str | None) -> str:
     data = loads(raw, None)
     if not isinstance(data, dict):
@@ -216,12 +220,20 @@ def task_action(task: Task, approved: bool, pending_exec: bool, has_manifest: bo
         if pending_exec:
             return command(f"python -m company sandbox run {tid}",
                            "Consomme UNE autorisation d'exécution et lance les tests dans Docker isolé.")
-        return command(f'python -m company sandbox approve {tid} --reviewed --actor VOTRE_NOM --reason "code relu"',
+        manifest = loads(task.artifact_manifest, {})
+        files = items(manifest.get("files"), 50) if isinstance(manifest, dict) else []
+        extensions = {Path(f["path"]).suffix.lower() for f in files
+                      if isinstance(f, dict) and isinstance(f.get("path"), str)}
+        profile = "static-html" if ".html" in extensions and ".py" not in extensions else "python-unittest"
+        return command(f'python -m company sandbox approve {tid} --reviewed --profile {profile} '
+                       '--actor VOTRE_NOM --reason "code relu"',
                        f"Après relecture de artifacts/prototypes/{tid}/ : autorise UNE exécution isolée de ce "
-                       "contenu exact. L'approbation de génération ne suffit pas.")
+                       "contenu exact. Configurer SANDBOX_PYTHON_IMAGE_ID avec une image locale vérifiée. "
+                       "L'approbation de génération ne suffit pas.")
     if task.status in ("approved", "awaiting_evaluation"):
-        return command(f'python -m company measure {tid} --success 0|1 --notes "observation réelle"',
-                       "Consigne le résultat humain d'une expérimentation réelle ; aucune donnée simulée.")
+        return command(f'python -m company measure {tid} --success 0 --notes "observation réelle"',
+                       "Consigne le résultat humain : 0 pour échec, remplacer par 1 pour succès. "
+                       "Renseigner les observations réelles avant de lancer la commande.")
     return "<span class='muted'>Aucune action requise.</span>"
 
 
@@ -402,12 +414,12 @@ commerciale ni une mesure globale de qualité.</p>
                               .where(Ledger.run_id == run_id).group_by(Ledger.state)).all()
         result = loads(run.result_json, {})
         result = result if isinstance(result, dict) else {}
-        proposals = [p for p in result.get("proposals") or [] if isinstance(p, dict)][:20]
+        proposals = [p for p in items(result.get("proposals"), 20) if isinstance(p, dict)]
         critiques = result.get("critiques") if isinstance(result.get("critiques"), dict) else {}
-        votes = [v for v in result.get("votes") or [] if isinstance(v, dict)][:20]
+        votes = [v for v in items(result.get("votes"), 20) if isinstance(v, dict)]
         decision = result.get("decision") if isinstance(result.get("decision"), dict) else {}
         sources = result.get("sources") if isinstance(result.get("sources"), dict) else {}
-        errors = [str(e) for e in result.get("errors") or []][:20]
+        errors = [str(e) for e in items(result.get("errors"), 20)]
         prop_rows = [f"<tr><td>{h(p.get('id'))}</td><td><strong>{clip(p.get('title'), 160)}</strong><br>"
                      f"{clip(p.get('problem'), 400)}</td><td>{clip(p.get('customer'), 200)}</td>"
                      f"<td>{clip(p.get('experiment'), 300)}<br><span class='muted'>Critère : "
@@ -417,8 +429,8 @@ commerciale ni une mesure globale de qualité.</p>
         vote_rows = [f"<tr><td>{h(v.get('agent'))}</td><td>{h(v.get('proposal_id'))}</td>"
                      f"<td>{clip(v.get('reason'), 500)}</td><td>{clip(v.get('next_action'), 300)}</td></tr>" for v in votes]
         source_rows = []
-        for proposal_id, items in list(sources.items())[:20]:
-            for s in (items or [])[:5]:
+        for proposal_id, source_items in list(sources.items())[:20]:
+            for s in items(source_items, 5):
                 if isinstance(s, dict):
                     # URLs are shown as text, never as clickable links: they are unverified.
                     source_rows.append(f"<tr><td>{h(proposal_id)}</td><td>{clip(s.get('title'), 160)}</td>"

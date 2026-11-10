@@ -1,102 +1,42 @@
-# État d'avancement par rapport au cahier des charges
+# État actuel — 10 novembre 2026
 
-## Phase 1 — Communication entre modèles : IMPLÉMENTÉE
+Le projet est un **MVP de laboratoire supervisé** : débats, décisions, prototypes
+approuvés et preuves techniques. Il ne mesure pas de revenus réels et ne dirige
+pas une activité commerciale.
 
-- Trois connecteurs officiels : OpenAI Responses API, Anthropic Messages, Gemini GenerateContent.
-- Débat borné à trois étapes (proposition / critique / vote).
-- Synthèse déterministe par vote, égalités signalées.
-- Simulation déterministe sans clé.
+PR #7 intégrée dans main au commit c358f1b ; CI GitHub verte :
+https://github.com/Julien-RDS/autonomous-ai-company/actions/runs/42787501350
+Les corrections d’audit sont sur `feat/project-readiness-audit` ; cela ne signifie
+pas leur fusion dans main.
 
-## Phase 2 — Mémoire et autonomie : PARTIELLEMENT IMPLÉMENTÉE
+| Composant | Utilisable aujourd’hui | Limite actuelle |
+|---|---|---|
+| Conseil OpenAI / Anthropic / Gemini | Démonstration sans clé ; connecteurs API implémentés | Appels payants non validés pendant cet audit |
+| Proposition, recherche, critique, vote, décision | Cycle borné, rapports et tickets | Le débat ne prouve ni demande ni qualité |
+| Persistance et migrations | SQLite local ; PostgreSQL 16 pour reprise durable | Sauvegardes à organiser sur la machine cible |
+| File, leases, checkpoints, reprise après crash | Réunions et génération MOCK | Worker réel et sandbox en file absents |
+| Budget EUR | Decimal, réservations, incertitudes et rapprochement humain | Estimation locale ; plafonds fournisseur séparés |
+| Prototypes | Approbation, manifeste et publication atomique | Aucun lancement automatique du code |
+| Sandbox | Python unittest et validation statique HTML ; approbation dédiée à usage unique | Docker doit appliquer les limites réelles ; HTML ne teste pas JavaScript |
+| Supervision web | Réunions, tâches, file, budget, rapports, sandbox | Lecture seule, sans authentification, locale uniquement |
+| Planification | Scheduler quotidien tant que son processus tourne | Une instance ; pas de verrou global |
+| Évaluation | Résultats humains et routage expérimental | Pas de benchmark indépendant ni de validation commerciale automatisée |
+| GitHub, navigateur agentique, emails, paiements, publication | Absents de l’application | Chantiers distincts, hors MVP supervisé |
 
-- SQLite ou PostgreSQL : réunions, messages, dépenses, tickets, feedbacks.
-- Planification quotidienne avec APScheduler.
-- Récupération des décisions des 3 réunions terminées précédentes.
-- Lot 2 : reprise LangGraph PostgreSQL, file SQL durable, leases, heartbeats, tentatives bornées et audit implémentés pour les workflows MOCK. Sauvegardes documentées ; automatisation et activation des workers réels restent à réaliser.
+## Éléments vérifiés
 
-## Phase 3 — Outils et exécution : PARTIELLEMENT IMPLÉMENTÉE
+Voir [l’audit global](AUDIT_GLOBAL_2026_11.md) pour les défauts reproduits, les tests,
+le parcours Chromium et les limites cloud. Les anciennes notes de lots décrivent
+leur état à la livraison : leurs compteurs et mentions « non fusionné » ne sont
+pas l’état actuel.
 
-- Recherche Tavily facultative, bornée et comptabilisée avec un coût paramétré.
-- Écriture de fichiers de prototypes locaux après approbation.
-- Lot 3 : tests isolés des prototypes dans Docker, après approbation d'exécution dédiée et à usage unique (voir `LOT_3_SANDBOX.md`).
-- Manquent : connexion GitHub, navigateur agentique, profils de test autres que Python, exécution depuis la file durable et déploiement.
-- Aucune commande système issue d'une IA n'est exécutée sur l'hôte ; seule la commande de test fixée par l'application tourne dans le conteneur.
+## Dernier chantier du MVP pilotable
 
-## Phase 4 — Intelligence économique : ÉBAUCHE
+La [mission Claude](PROMPT_CLAUDE_FINALISATION.md) porte sur les actions web
+**authentifiées, auditées et durables**. Elle doit empêcher les doublons et traiter
+les crashs sans rejouer une exécution ambiguë. Les workers payants restent désactivés.
 
-- Hypothèses de marché / tests à mener / critères de validation / recherche de concurrence.
-- Manquent : données terrain réelles, CRM, vérification des revenus, prospection consentie avec contrôles, mesure commerciale intégrée.
-
-## Phase 5 — Auto-optimisation : ÉBAUCHE
-
-- Statistiques de vitesse/erreurs et enregistrement d'évaluations humaines.
-- Routage exploratoire de prototypes puis adaptation après au moins 3 exemples par fournisseur.
-- Manquent : benchmarks reproductibles communs, analyse de qualité indépendante, optimisation des workflows avec revue humaine.
-
-## Sécurité
-
-- Mode démo par défaut.
-- Refus du mode réel tant que clés, modèles et tarifs ne sont pas renseignés.
-- Contrôle budgétaire prévisionnel local ; les limites **réelles** doivent également être configurées chez les fournisseurs.
-- Tâches nécessitant approbation humaine.
-- Aucun paiement, email, contrat ou publication ; aucun code produit par un modèle exécuté hors du sandbox Docker approuvé pour ce lancement précis.
-
-## Statut de vérification
-
-- Tests unitaires/intégration de la démonstration : réussis dans l'environnement de génération.
-- Tableau de bord et chaîne complète de production de fichiers : testés en mode simulation.
-- Intégration réelle des SDK, LangGraph officiel, PostgreSQL et APScheduler : code écrit mais **non testé ici** (l'accès réseau de l'environnement de génération n'a pas permis d'installer les dépendances manquantes). Une validation sur Ubuntu/WSL est nécessaire après `pip install -r requirements.txt`.
-
-## Validation du Lot 2
-
-Migrations vierges/historiques, Decimal, réservations concurrentes, leases,
-checkpoints et crashs de processus testés avec PostgreSQL 16 réel.
-Démarrage Compose (migration puis worker) et workflow MOCK validés.
-Voir `LOT_2_PERSISTENCE.md` pour le protocole et les limites ; aucune API payante
-n'a été contactée. Le résultat de la CI distante n'est pas encore observé.
-
-## Complément après revue des Lots 1/2
-
-Les prototypes MOCK approuvés peuvent être soumis à la file durable : verrou
-commun avec la CLI, manifeste persistant et reprise après publication interrompue.
-Le rapprochement humain des coûts inconnus est disponible avec référence d'audit.
-Voir `REVIEW_AND_DURABLE_PROTOTYPES.md` pour les limites et le blocage réseau GitHub.
-
-## Lot 3 — tests isolés (branche feat/lot-3-sandbox)
-
-Revue du socle : fuite de secrets via `repr(Settings)` et mise en dead-letter
-d'un travail dont l'ancien propriétaire était encore vivant, corrigées avec tests.
-Exécuteur Docker isolé, approbation d'exécution à usage unique, migration additive
-006 et commandes `sandbox`. Validé localement sous Python 3.11/3.12 avec
-PostgreSQL 16 et Docker réels ; CI distante de la branche à observer après push.
-
-### Revue du Lot 3 et suites
-
-Bundle Claude importé sur feat/lot-3-sandbox, sans fusion. Remise en file humaine
-avec audit, profil statique HTML, image CI épinglée et dashboard sandbox ajoutés.
-Limite cloud confirmée : Docker rootless sans contrôleurs de ressources ; sandbox
-refusé par défaut dans ce cas. Les intégrations d'isolation Docker ne sont pas
-validées dans cet environnement. Voir LOT_3_SANDBOX.md.
-
-## Lot 3 — validation réelle et récupération
-
-Sandbox validé sur Docker rootful (cgroup v1) avec mesure des limites dans le
-conteneur ; sonde de limites effectives avant chaque exécution. Sept défauts
-reproduits et corrigés (profil HTML, base de travail, sorties terminal, liaison
-approbation/disque, approbation brûlée, résultat tardif, conteneur en démarrage).
-Diagnostic `sandbox doctor`, nettoyage ciblé audité (migration 008).
-150 réussis, 12 ignorés, 0 échec en Python 3.11 et 3.12. Voir LOT_3_SANDBOX.md.
-
-## Résultats et récupération après la PR #5
-
-Migration 009 : version des validateurs, résumés structurés non fiables et preuves
-d'exécution conservées. Nettoyage sérialisé avec intention persistante et absence
-Docker confirmée avant suppression des fichiers. Voir SANDBOX_RESULTS_RECOVERY.md.
-La validation de l'isolation Docker reste bloquée sur l'hôte cloud sans cgroups.
-
-## Supervision en lecture seule (feat/supervision-dashboard)
-
-Pages de supervision server-side sans JavaScript (CSP sans script), routes GET uniquement,
-commandes CLI affichées pour chaque intervention, coûts distingués par certitude, contenus
-non fiables échappés, aucun chemin accepté du navigateur. 201 réussis, 12 ignorés, 0 échec
-(3.11 et 3.12). Captures WeasyPrint ; pas de navigateur réel disponible. Voir SUPERVISION.md.
+Après validation, l’objectif est un outil personnel pilotable depuis le navigateur
+sur une machine maîtrisée. Une entreprise autonome rentable, un service public
+multi-clients et une exploitation payante 24 h/24 restent hors de cette définition
+de fini.

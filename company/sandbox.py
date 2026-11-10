@@ -639,14 +639,15 @@ def run_approved(sessions, task_id: str, *, images: dict[str, str] | None = None
         ).order_by(ExecutionApproval.created_at, ExecutionApproval.id)).all()
         if not candidates:
             raise SandboxRefused("Aucune autorisation d'exécution disponible pour cette tâche")
-        matching=[a for a in candidates if a.manifest_sha256 == digest]
-        approval=next((a for a in matching if a.profile in PROFILES and
-                       a.validator_version == validator_version(a.profile)), matching[0] if matching else None)
-        if approval is None:
+        matching = [a for a in candidates if a.manifest_sha256 == digest]
+        if not matching:
             raise SandboxRefused("Le contenu a changé depuis l'autorisation : nouvelle approbation requise")
-        if images.get(approval.profile) != approval.image_id:
+        matching = [a for a in matching if images.get(a.profile) == a.image_id]
+        if not matching:
             raise SandboxRefused("Image autorisée différente de la configuration courante : aucune exécution")
-        if approval.profile not in PROFILES or approval.validator_version != validator_version(approval.profile):
+        approval = next((a for a in matching if a.profile in PROFILES and
+                         a.validator_version == validator_version(a.profile)), None)
+        if approval is None:
             raise SandboxRefused('Validateur modifié ou historique : nouvelle approbation requise')
         approval.consumed_at = utcnow()
         attempt = (db.scalar(select(func.max(SandboxRun.attempt)).where(SandboxRun.task_id == task_id)) or 0) + 1
@@ -678,8 +679,8 @@ def run_approved(sessions, task_id: str, *, images: dict[str, str] | None = None
         envelope['stdout']=outcome.stdout[:65536]; envelope['stderr']=outcome.stderr[:65536]
         envelope['detail']=outcome.detail[:250]
         db.add(SandboxEvidence(run_id=run_id,outcome_json=json.dumps(envelope,ensure_ascii=True)))
-        run.summary_json=json.dumps(summary) if summary is not None else None
         if run.state == "RUNNING":
+            run.summary_json=json.dumps(summary) if summary is not None else None
             run.state, run.exit_code = outcome.state, outcome.exit_code
             run.duration_ms, run.output_bytes, run.truncated = outcome.duration_ms, outcome.output_bytes, outcome.truncated
             run.stdout, run.stderr, run.detail = outcome.stdout, outcome.stderr, outcome.detail
@@ -689,7 +690,12 @@ def run_approved(sessions, task_id: str, *, images: dict[str, str] | None = None
             # Marked INTERRUPTED meanwhile: keep that verdict, but never drop the evidence.
             run.exit_code = outcome.exit_code if run.exit_code is None else run.exit_code
             run.duration_ms = outcome.duration_ms if run.duration_ms is None else run.duration_ms
-            run.output_bytes, run.truncated = outcome.output_bytes, outcome.truncated
+            # Never reduce previously observed output or erase a truncation marker.
+            # The late result's exact values remain in the immutable envelope.
+            run.output_bytes = max(run.output_bytes, outcome.output_bytes)
+            run.truncated = run.truncated or outcome.truncated
+            if run.summary_json is None and summary is not None:
+                run.summary_json = json.dumps(summary)
             run.stdout = run.stdout or outcome.stdout
             run.stderr = run.stderr or outcome.stderr
             run.detail = f"{run.detail[:120]} | résultat tardif : {outcome.state} {outcome.detail}"[:250]

@@ -1,7 +1,7 @@
 name: Tests
 on:
   push:
-    branches: [main, dev, feat/lot-3-sandbox, feat/sandbox-results-recovery, fix/ci-cgroup-diagnostics]
+    branches: [main, dev, 'feat/**', 'fix/**']
   pull_request:
 permissions:
   contents: read

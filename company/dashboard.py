@@ -1,13 +1,11 @@
 """Tableau de bord local en lecture seule, à ne pas exposer sur internet."""
 from __future__ import annotations
 
-from html import escape
-import json
-
 from fastapi import FastAPI
 from sqlalchemy import select
 
 from .database import Run, Task, SandboxRun
+from .supervision import loads, register
 
 
 def create_app(sessions, settings, budget) -> FastAPI:
@@ -36,13 +34,12 @@ def create_app(sessions, settings, budget) -> FastAPI:
             rows=db.scalars(select(SandboxRun).order_by(SandboxRun.started_at.desc()).limit(50)).all()
         return [{'id':r.id,'task_id':r.task_id,'attempt':r.attempt,'state':r.state,
                  'profile':r.profile,'validator_version':r.validator_version,
-                 'manifest_sha256':r.manifest_sha256,'summary':json.loads(r.summary_json) if r.summary_json else None,
+                 'manifest_sha256':r.manifest_sha256,'summary':loads(r.summary_json, None),
                  'exit_code':r.exit_code,'duration_ms':r.duration_ms,
                  'started_at':r.started_at.isoformat(),'image_id':r.image_id} for r in rows]
 
     # Read-only supervision pages (GET only): overview at "/", meetings, tasks,
     # queue, sandbox and budget. See company/supervision.py and docs/SUPERVISION.md.
-    from .supervision import register
     register(app, sessions, settings, budget)
 
     return app

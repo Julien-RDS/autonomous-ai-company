@@ -199,6 +199,22 @@ def test_approval_is_bound_to_content_and_image(migrated_engine, tmp_path, monke
         assert db.get(ExecutionApproval, approval).consumed_at is None  # refusals consume nothing
 
 
+def test_new_image_approval_is_not_blocked_by_old_approval(migrated_engine, tmp_path, monkeypatch):
+    sessions, task_id = generated_task(migrated_engine, tmp_path, monkeypatch)
+    old = sandbox.approve_execution(sessions, task_id, profile="python-unittest", image_id=FAKE_IMAGE,
+                                    actor="alice", reason="initial review")
+    new_image = "sha256:" + "b" * 64
+    new = sandbox.approve_execution(sessions, task_id, profile="python-unittest", image_id=new_image,
+                                    actor="alice", reason="review of updated image")
+    calls = []
+    run = sandbox.run_approved(sessions, task_id, images={"python-unittest": new_image},
+                               executor=fake_executor(calls))
+    assert run.approval_id == new and run.image_id == new_image and len(calls) == 1
+    with sessions() as db:
+        assert db.get(ExecutionApproval, old).consumed_at is None
+        assert db.get(ExecutionApproval, new).consumed_at is not None
+
+
 def test_executor_crash_is_recorded_and_not_replayed(migrated_engine, tmp_path, monkeypatch):
     sessions, task_id = generated_task(migrated_engine, tmp_path, monkeypatch)
     sandbox.approve_execution(sessions, task_id, profile="python-unittest", image_id=FAKE_IMAGE,

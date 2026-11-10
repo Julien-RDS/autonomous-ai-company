@@ -10,7 +10,7 @@
 |---|---|---|
 | Propositions / critique contradictoire / votes des 3 agents | ✅ | Vote et opportunités simulés en mode démo ; les agents peuvent se tromper |
 | Orchestration LangGraph | ✅ | Cycle linéaire borné, pas de libre arbitre / évaluation objective automatique |
-| Mémoire SQLite ou PostgreSQL | ✅ | Historique de réunions, réponses, consommations et tâches ; reprise sur nouveau cycle après arrêt |
+| Mémoire SQLite ou PostgreSQL | ✅ | Historique ; reprise du même cycle MOCK via worker et checkpoints PostgreSQL |
 | Recherche web Tavily | Facultative | Une requête par proposition, uniquement avec clé et tarif paramétré ; résultats non vérifiés |
 | Budget / facturation | ✅ estimation locale | Ne remplace **pas** les plafonds opérateur, taxes, révisions tarifaires ou rapprochement factures |
 | Auto-attribution expérimentale | ✅ limitée | Routage sur validations humaines consignées ; sans résultats, rotation entre modèles |
@@ -219,6 +219,14 @@ python -m company sandbox cleanup --run RUN_ID --actor VOTRE_NOM --reason "motif
 
 Le code généré n'est jamais exécuté sur l'hôte. Configuration, garanties et
 limites : [docs/LOT_3_SANDBOX.md](docs/LOT_3_SANDBOX.md).
+
+La démonstration MOCK génère du HTML. Pour elle, choisir `--profile static-html`
+dans la commande `sandbox approve`. Les deux profils utilisent l'image locale
+vérifiée configurée par `SANDBOX_PYTHON_IMAGE_ID`. Ce profil vérifie la structure des fichiers ;
+il n'exécute pas leur JavaScript. Le profil Python nécessite des tests `test_*.py`.
+
+État actuel et limites d'utilisation : [avancement](docs/AVANCEMENT.md).
+Dernière revue : [audit global](docs/AUDIT_GLOBAL_2026_11.md).
 
 Les résumés de tests déclarés et leur provenance sont visibles dans le dashboard.
 La récupération confirme la disparition des conteneurs avant suppression des
