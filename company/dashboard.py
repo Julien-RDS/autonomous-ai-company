@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import select
 
 from .database import Run, Task, SandboxRun
@@ -10,6 +11,8 @@ from .supervision import loads, register
 
 def create_app(sessions, settings, budget) -> FastAPI:
     app = FastAPI(title="Autonomous AI Company — suivi local")
+    # Reject DNS-rebinding Host headers even on read-only GET routes.
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
     @app.get("/api/status")
     def status():
@@ -41,5 +44,9 @@ def create_app(sessions, settings, budget) -> FastAPI:
     # Read-only supervision pages (GET only): overview at "/", meetings, tasks,
     # queue, sandbox and budget. See company/supervision.py and docs/SUPERVISION.md.
     register(app, sessions, settings, budget)
+
+    # Explicitly opt-in local web actions: no writes unless two secrets and permission allowlist exist.
+    from .web_actions import register as register_actions
+    register_actions(app, sessions, settings, budget)
 
     return app
