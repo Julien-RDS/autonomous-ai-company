@@ -253,7 +253,14 @@ def register(app: FastAPI, sessions, settings, budget) -> None:
             # Validate permissions BEFORE loading providers or triggering any side-effect.
             if kind == "approve":
                 from .approvals import approve_task
-                await run_in_threadpool(approve_task, sessions, identifier, actor=ACTOR)
+                def record_approval():
+                    # Same persistent checkpoint path as the existing CLI operation.
+                    if sessions.kw["bind"].dialect.name == "postgresql":
+                        from .worker import checkpoints
+                        with checkpoints(settings.db_url, f"approval:{identifier}") as saver:
+                            return approve_task(sessions, identifier, actor=ACTOR, checkpointer=saver)
+                    return approve_task(sessions, identifier, actor=ACTOR)
+                await run_in_threadpool(record_approval)
             elif kind == "prototype":
                 if not settings.mock:
                     raise ValueError("Génération web limitée au mode MOCK")
