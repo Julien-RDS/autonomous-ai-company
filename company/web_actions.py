@@ -229,6 +229,8 @@ def register(app: FastAPI, sessions, settings, budget) -> None:
 
     @app.post("/actions/logout")
     async def logout(request: Request):
+        if cfg is None:
+            raise HTTPException(404)
         _same_origin(request)
         fields = await _fields(request)
         if cfg is None or (session := _session(request, cfg)) is None:
@@ -241,7 +243,7 @@ def register(app: FastAPI, sessions, settings, budget) -> None:
 
     @app.post("/actions/{kind}")
     async def action(kind: str, request: Request):
-        if kind not in PERMISSIONS:
+        if cfg is None or kind not in PERMISSIONS:
             raise HTTPException(404)
         _same_origin(request)
         fields = await _fields(request)
