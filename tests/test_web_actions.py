@@ -154,3 +154,10 @@ def test_logout_invalidates_browser_cookie(migrated_engine, monkeypatch):
     assert result.status_code == 303
     assert client.get("/actions").status_code == 200
     assert "Connexion administrateur" in client.get("/actions").text
+
+
+def test_dns_rebinding_host_is_rejected(migrated_engine, monkeypatch):
+    _, client = build(migrated_engine, monkeypatch)
+    assert client.get("/", headers={"host": "evil.example"}).status_code == 400
+    assert client.get("/actions", headers={"host": "evil.example"}).status_code == 400
+    assert client.get("/actions").status_code == 200
