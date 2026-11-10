@@ -110,7 +110,8 @@ def test_invalid_payload_and_session_tampering(migrated_engine, monkeypatch):
                        headers=REPO_HOST).status_code == 400
     assert client.post("/actions/approve", content=b"csrf=a&csrf=b&id=a",
                        headers={**REPO_HOST, "content-type": "application/x-www-form-urlencoded"}).status_code == 400
-    client.cookies.set("aac_web_session", "not.a.valid.session")
+    client.cookies.clear()
+    client.cookies.set("aac_web_session", "not.a.valid.session", path="/actions")
     assert client.post("/actions/approve", data={"id": "0"*32, "csrf": token},
                        headers=REPO_HOST).status_code == 401
 
