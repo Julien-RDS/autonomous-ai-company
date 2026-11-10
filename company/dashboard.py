@@ -45,4 +45,8 @@ def create_app(sessions, settings, budget) -> FastAPI:
     from .supervision import register
     register(app, sessions, settings, budget)
 
+    # Explicitly opt-in local web actions: no writes unless two secrets and permission allowlist exist.
+    from .web_actions import register as register_actions
+    register_actions(app, sessions, settings, budget)
+
     return app
