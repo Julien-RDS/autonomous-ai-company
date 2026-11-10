@@ -24,7 +24,8 @@ def build(engine, monkeypatch, *, permissions="approve"):
     migrate(engine)
     from sqlalchemy.orm import sessionmaker
     sessions = sessionmaker(engine, expire_on_commit=False)
-    settings = replace(Settings.load(), mock=True)
+    settings = replace(Settings.load(), mock=True,
+                       db_url=engine.url.render_as_string(hide_password=False))
     monkeypatch.setenv("AAC_WEB_ADMIN_TOKEN", TOKEN)
     monkeypatch.setenv("AAC_WEB_SESSION_SECRET", SECRET)
     monkeypatch.setenv("AAC_WEB_PERMISSIONS", permissions)
