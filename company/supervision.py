@@ -107,7 +107,7 @@ gap:4px 16px;margin:0}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
 """
 
 NAV = (("/", "Vue d'ensemble"), ("/runs", "Réunions"), ("/tasks", "Tâches"), ("/work", "File"),
-       ("/sandbox", "Sandbox"), ("/budget", "Budget"))
+       ("/sandbox", "Sandbox"), ("/budget", "Budget"), ("/actions", "Actions"))
 
 
 # ------------------------------------------------------------------ helpers
