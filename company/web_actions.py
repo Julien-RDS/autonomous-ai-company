@@ -112,7 +112,11 @@ def _same_origin(request: Request):
 async def _fields(request: Request) -> dict[str, str]:
     if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/x-www-form-urlencoded":
         raise HTTPException(415, "Formulaire requis")
-    if int(request.headers.get("content-length") or 0) > MAX_BODY:
+    try:
+        declared_length = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        raise HTTPException(400, "Taille invalide")
+    if declared_length > MAX_BODY:
         raise HTTPException(413, "Formulaire trop volumineux")
     body = await request.body()
     if len(body) > MAX_BODY:
@@ -153,7 +157,7 @@ def register(app: FastAPI, sessions, settings, budget) -> None:
     @app.get("/actions", response_class=HTMLResponse)
     def index(request: Request):
         if cfg is None:
-            return HTMLResponse("<h1>Actions désactivées</h1>", status_code=404)
+            return page(settings, "Actions désactivées", "<h1>Actions désactivées</h1><p>Configurer les secrets et permissions pour activer les actions web.</p>", "/actions", datetime.now(timezone.utc))
         identity = _session(request, cfg)
         if identity is None:
             body = ('<h1>Connexion administrateur</h1><p>Console locale : accès protégé.</p>'
@@ -227,7 +231,6 @@ def register(app: FastAPI, sessions, settings, budget) -> None:
     async def logout(request: Request):
         _same_origin(request)
         fields = await _fields(request)
-        authorized(request, fields, "logout") if False else None
         if cfg is None or (session := _session(request, cfg)) is None:
             raise HTTPException(401, "Connexion requise")
         if not hmac.compare_digest(fields.get("csrf", ""), session["csrf"]):
