@@ -17,12 +17,23 @@ Elle n'a aucune preuve autonome de rentabilité.
 Sont implémentés : SQLAlchemy/Alembic, SQLite et PostgreSQL, montants Decimal,
 file durable, leases et checkpoints LangGraph pour le MOCK, génération durable,
 sandbox Docker contraint, autorisations à usage unique, preuves et nettoyages
-audités, supervision FastAPI en lecture seule.
+audités, supervision FastAPI. La PR #8 ajoute une console locale optionnelle :
+jeton administrateur, cookie HMAC d’une heure, contrôle Host/Origin, CSRF et
+permissions distinctes. Lis company/web_actions.py et docs/WEB_ACTIONS.md.
+Elle exécute encore génération et sandbox dans le thread de la requête HTTP ;
+elle n’a pas de registre persistant des demandes ni de révocation individuelle
+des sessions. Ne réimplémente pas ces routes depuis zéro.
 
-PR #7 fusionnée dans main (`c358f1b`). La branche `feat/project-readiness-audit`
+Ces défauts sont reproduits : deux POST identiques d'approbation sandbox créent
+deux autorisations ; une copie du cookie reste utilisable après déconnexion.
+Traite ces deux contre-exemples comme des critères d'acceptation obligatoires.
+
+PR #7 et PR #8 fusionnées dans main (`ea7dc9d`). La branche `feat/project-readiness-audit`
 corrige les autorisations après changement d'image, les résultats tardifs, les
 données malformées à l'affichage et les commandes CLI proposées ; elle actualise
-la documentation et les déclencheurs CI.
+la documentation et les déclencheurs CI. Elle intègre la PR #8 et corrige aussi
+les formulaires surdimensionnés en streaming, les jetons Unicode invalides et
+la connexion Chromium (politique de référent same-origin, origine nulle refusée).
 Lis CLAUDE.md, docs/AVANCEMENT.md, docs/AUDIT_GLOBAL_2026_11.md et les tests.
 Fetch les références et confirme SHA/CI. Si l'audit n'est pas dans main, pars de
 sa branche et explicite la dépendance dans la PR ; sinon pars de main.
@@ -47,17 +58,18 @@ l'interface qui les utilise.
 
 ## Périmètre à livrer
 
-1. Authentification locale explicite, sans compte/mot de passe par défaut.
-   Initialisation/récupération par CLI, hachage avec une bibliothèque éprouvée,
-   sessions expirables et révocables, protection contre les essais répétés.
-   Cookies HttpOnly/SameSite, Secure sous HTTPS ; documenter HTTP loopback.
-   Protéger aussi API et téléchargements. Rester sur 127.0.0.1 par défaut.
-   Contrôler Host/Origin et CSRF sur les mutations, connexion/déconnexion comprises.
-   L'identité d'audit vient de la session, jamais d'un champ actor du formulaire.
+1. Consolider l'authentification locale existante : sessions révocables côté serveur
+   (déconnexion comprise), expiration, limitation des essais persistante entre
+   processus et procédure locale d'initialisation/rotation/récupération des secrets.
+   Conserver les contrôles Host/Origin/CSRF et cookies HttpOnly/SameSite, Secure sous
+   HTTPS ; documenter HTTP loopback. Le périmètre reste un administrateur personnel,
+   sans plateforme multi-clients. L'identité d'audit provient du serveur et les
+   permissions sont vérifiées à chaque action. Préciser quelles lectures restent
+   publiques au processus local ; aucune exposition réseau implicite.
 
-2. Permissions serveur : consultation et intervention. Mutations par POST ; GET
+2. Permissions serveur : consultation et intervention. Conserver mutations par POST et GET
    sans effet métier. Partager les services métier entre CLI et web, sans commande
-   shell issue d'un formulaire. Confirmation explicite des effets, erreurs neutres,
+   shell issue d'un formulaire. Boutons contextuels évitant la copie d’identifiants, confirmation des effets, erreurs neutres,
    identifiants d'action et résultat consultable après redirection.
 
 3. Actions : soumettre une réunion MOCK, approuver une génération et la mettre
@@ -97,12 +109,12 @@ l'interface qui les utilise.
 - PostgreSQL est la référence du pilotage durable. Conserver lecture/CLI SQLite ;
   refuser clairement les actions nécessitant PostgreSQL lorsque celui-ci manque.
 - Tests SQLite/PostgreSQL et Python 3.11/3.12 : accès anonyme, session expirée,
-  révocation, CSRF/Origin, mauvais rôle, requêtes concurrentes, contenu/image/
+  révocation, CSRF/Origin, permission absente, requêtes concurrentes, contenu/image/
   validateur modifiés, autorisation expirée/consommée, crashs et reprise.
 - Vrai parcours navigateur du scénario MOCK complet, avec double soumission et
   reconnexion après redémarrage. Docker réel sur hôte capable ; tests ignorés
   explicitement documentés sur l'hôte cloud sans contrôleurs de ressources.
-- Procédure d'installation : initialisation du compte, migrations, démarrage
+- Procédure d'installation : initialisation des accès, migrations, démarrage
   web/worker, sauvegarde et restauration de la base ET des artefacts. Vérifier une
   restauration de données de test dans une nouvelle base.
 - Livrer commits, PR de revue, commandes, résultats exacts, captures, limites et

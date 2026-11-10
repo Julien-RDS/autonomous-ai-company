@@ -116,11 +116,16 @@ async def _fields(request: Request) -> dict[str, str]:
         declared_length = int(request.headers.get("content-length") or 0)
     except ValueError:
         raise HTTPException(400, "Taille invalide")
+    if declared_length < 0:
+        raise HTTPException(400, "Taille invalide")
     if declared_length > MAX_BODY:
         raise HTTPException(413, "Formulaire trop volumineux")
-    body = await request.body()
-    if len(body) > MAX_BODY:
-        raise HTTPException(413, "Formulaire trop volumineux")
+    # Bound memory even when Content-Length is absent or forged (chunked bodies).
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_BODY:
+            raise HTTPException(413, "Formulaire trop volumineux")
+        body.extend(chunk)
     try:
         params = parse_qs(body.decode("utf-8", errors="strict"), keep_blank_values=True,
                           max_num_fields=15, strict_parsing=True)
@@ -208,7 +213,7 @@ def register(app: FastAPI, sessions, settings, budget) -> None:
             raise HTTPException(404, "Actions désactivées")
         _same_origin(request)
         fields = await _fields(request)
-        if not hmac.compare_digest(fields.get("token", ""), cfg[0]):
+        if not hmac.compare_digest(fields.get("token", "").encode("utf-8"), cfg[0].encode("utf-8")):
             # Deliberately do not distinguish unknown user, expired token or password.
             raise HTTPException(403, "Authentification refusée")
         response = RedirectResponse("/actions", status_code=303)
@@ -224,7 +229,7 @@ def register(app: FastAPI, sessions, settings, budget) -> None:
         session = _session(request, cfg)
         if session is None:
             raise HTTPException(401, "Connexion requise")
-        if not hmac.compare_digest(fields.get("csrf", ""), session["csrf"]):
+        if not hmac.compare_digest(fields.get("csrf", "").encode("utf-8"), session["csrf"].encode("utf-8")):
             raise HTTPException(403, "Jeton CSRF invalide")
 
     @app.post("/actions/logout")
@@ -235,7 +240,7 @@ def register(app: FastAPI, sessions, settings, budget) -> None:
         fields = await _fields(request)
         if cfg is None or (session := _session(request, cfg)) is None:
             raise HTTPException(401, "Connexion requise")
-        if not hmac.compare_digest(fields.get("csrf", ""), session["csrf"]):
+        if not hmac.compare_digest(fields.get("csrf", "").encode("utf-8"), session["csrf"].encode("utf-8")):
             raise HTTPException(403, "Jeton CSRF invalide")
         response = RedirectResponse("/actions", status_code=303)
         response.delete_cookie(COOKIE, path="/actions")

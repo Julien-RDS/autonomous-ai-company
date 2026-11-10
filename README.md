@@ -18,7 +18,7 @@
 | Tests isolés des prototypes (Docker) | ✅ sous approbation dédiée | Une approbation d'exécution par lancement, lancé par un humain sur l'hôte ; Docker n'est pas une isolation absolue |
 | Tâches et résultats terrain | ✅ | Approbation et saisie humaine explicites |
 | Planification quotidienne | ✅ | Processus actif indispensable ; une seule instance prévue |
-| Dashboard web local | ✅ | Lecture seule, sans authentification, sur 127.0.0.1 uniquement |
+| Dashboard web local | ✅ | Consultation locale ; actions optionnelles protégées par jeton et permissions, sur 127.0.0.1 uniquement |
 | GitHub auto-commit, navigateur autonome, emails clients, paiements, contrats, déploiements publics, mesure de revenus | ❌ | Non implémentés pour ce MVP, ne pas les supposer actifs |
 
 ## Démarrage sous Ubuntu ou WSL
@@ -45,7 +45,7 @@ Vous obtiendrez un compte rendu `reports/<ID>.md`, 9 réponses d'agents fictifs 
 python -m company dashboard
 ```
 
-Ouvrir **http://127.0.0.1:8000** dans le navigateur local. Aucun bouton ne déclenche de paiement ou ne modifie une tâche. Vue JSON : `/api/status`.
+Ouvrir **http://127.0.0.1:8000** dans le navigateur local. La consultation est en lecture seule par défaut. La console `/actions` peut être activée explicitement pour les interventions locales documentées dans [WEB_ACTIONS.md](docs/WEB_ACTIONS.md). Vue JSON : `/api/status`.
 
 ### Générer un prototype local après validation
 

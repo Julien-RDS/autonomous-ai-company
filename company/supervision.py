@@ -42,7 +42,10 @@ SECURITY_HEADERS = {
     "Content-Security-Policy": ("default-src 'none'; style-src 'self'; img-src 'self'; base-uri 'none'; "
                                 "form-action 'self'; frame-ancestors 'none'"),
     "X-Content-Type-Options": "nosniff",
-    "Referrer-Policy": "no-referrer",
+    # Browsers may send Origin: null on form POSTs under no-referrer, which
+    # correctly fails the actions' origin check. Keep same-origin forms usable
+    # without disclosing a referrer to other origins.
+    "Referrer-Policy": "same-origin",
     "X-Frame-Options": "DENY",
     "Cache-Control": "no-store",
 }

@@ -35,7 +35,9 @@ Routes conservées : `/api/status`, `/api/sandbox-runs`.
 
 - CSP `default-src 'none'; style-src 'self'` : **aucun script** ne peut s'exécuter,
   même si un contenu échappait au filtrage ; `nosniff`, `frame-ancestors 'none'`,
-  `Referrer-Policy: no-referrer`, `Cache-Control: no-store`.
+  `Referrer-Policy: same-origin`, `Cache-Control: no-store`. La politique de référent
+  conserve l'origine des formulaires locaux (connexion comprise), sans transmettre
+  de référent aux autres origines.
 - Toute donnée de modèle, de recherche ou de conteneur est échappée ; les caractères de
   contrôle et bidi des sorties sont affichés sous forme `\x1b` / `\u202e`.
 - **Aucun chemin n'est accepté du navigateur.** Le rapport est recalculé à partir de

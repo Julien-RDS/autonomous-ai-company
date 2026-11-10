@@ -4,8 +4,9 @@ Le projet est un **MVP de laboratoire supervisé** : débats, décisions, protot
 approuvés et preuves techniques. Il ne mesure pas de revenus réels et ne dirige
 pas une activité commerciale.
 
-PR #7 intégrée dans main au commit c358f1b ; CI GitHub verte :
-https://github.com/Julien-RDS/autonomous-ai-company/actions/runs/42787501350
+PR #7 (supervision) puis PR #8 (actions web locales) intégrées dans main,
+à ea7dc9d. CI GitHub verte :
+https://github.com/Julien-RDS/autonomous-ai-company/actions/runs/42789168581
 Les corrections d’audit sont sur `feat/project-readiness-audit` ; cela ne signifie
 pas leur fusion dans main.
 
@@ -18,7 +19,8 @@ pas leur fusion dans main.
 | Budget EUR | Decimal, réservations, incertitudes et rapprochement humain | Estimation locale ; plafonds fournisseur séparés |
 | Prototypes | Approbation, manifeste et publication atomique | Aucun lancement automatique du code |
 | Sandbox | Python unittest et validation statique HTML ; approbation dédiée à usage unique | Docker doit appliquer les limites réelles ; HTML ne teste pas JavaScript |
-| Supervision web | Réunions, tâches, file, budget, rapports, sandbox | Lecture seule, sans authentification, locale uniquement |
+| Supervision web | Réunions, tâches, file, budget, rapports, sandbox | Consultation locale sans authentification |
+| Actions web locales optionnelles | Jeton administrateur, session signée, CSRF, permissions distinctes | Traitements longs dans HTTP, pas de registre durable des demandes ni de révocation individuelle des sessions |
 | Planification | Scheduler quotidien tant que son processus tourne | Une instance ; pas de verrou global |
 | Évaluation | Résultats humains et routage expérimental | Pas de benchmark indépendant ni de validation commerciale automatisée |
 | GitHub, navigateur agentique, emails, paiements, publication | Absents de l’application | Chantiers distincts, hors MVP supervisé |
@@ -32,8 +34,8 @@ pas l’état actuel.
 
 ## Dernier chantier du MVP pilotable
 
-La [mission Claude](PROMPT_CLAUDE_FINALISATION.md) porte sur les actions web
-**authentifiées, auditées et durables**. Elle doit empêcher les doublons et traiter
+La [mission Claude](PROMPT_CLAUDE_FINALISATION.md) porte sur la **durabilité des actions web et
+la reprise après crash** à partir de la console authentifiée existante. Elle doit empêcher les doublons et traiter
 les crashs sans rejouer une exécution ambiguë. Les workers payants restent désactivés.
 
 Après validation, l’objectif est un outil personnel pilotable depuis le navigateur

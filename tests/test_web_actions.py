@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import asyncio
 from dataclasses import replace
 from decimal import Decimal
 
@@ -66,10 +67,13 @@ def test_disabled_by_default(migrated_engine, monkeypatch):
 
 def test_login_requires_origin_and_credentials(migrated_engine, monkeypatch):
     _, client = build(migrated_engine, monkeypatch)
+    assert client.get("/actions").headers["referrer-policy"] == "same-origin"
     assert client.post("/actions/login", data={"token": TOKEN}).status_code == 403
     assert client.post("/actions/login", data={"token": "bad"}, headers=REPO_HOST).status_code == 403
     assert client.post("/actions/login", data={"token": TOKEN},
                        headers={"origin": "http://evil.example"}).status_code == 403
+    assert client.post("/actions/login", data={"token": TOKEN},
+                       headers={"origin": "null"}).status_code == 403
     token = login(client)
     assert len(token) >= 32
     assert client.get("/actions").status_code == 200
@@ -162,3 +166,34 @@ def test_dns_rebinding_host_is_rejected(migrated_engine, monkeypatch):
     assert client.get("/", headers={"host": "evil.example"}).status_code == 400
     assert client.get("/actions", headers={"host": "evil.example"}).status_code == 400
     assert client.get("/actions").status_code == 200
+
+
+def test_unicode_credentials_are_rejected_without_server_error(migrated_engine, monkeypatch):
+    _, client = build(migrated_engine, monkeypatch)
+    assert client.post("/actions/login", data={"token": "é" * 48}, headers=REPO_HOST).status_code == 403
+    login(client)
+    assert client.post("/actions/approve", data={"id": "0" * 32, "csrf": "é" * 48},
+                       headers=REPO_HOST).status_code == 403
+    assert client.post("/actions/logout", data={"csrf": "é" * 48}, headers=REPO_HOST).status_code == 403
+
+
+def test_chunked_form_stops_reading_at_limit():
+    import pytest
+    from fastapi import HTTPException
+    from starlette.requests import Request
+    from company.web_actions import _fields, MAX_BODY
+    chunks = 0
+
+    async def receive():
+        nonlocal chunks
+        chunks += 1
+        if chunks > 2:
+            raise AssertionError("Oversized stream must not be read to completion")
+        return {"type": "http.request", "body": b"x" * MAX_BODY, "more_body": True}
+
+    request = Request({"type": "http", "headers": [
+        (b"content-type", b"application/x-www-form-urlencoded")
+    ]}, receive=receive)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(_fields(request))
+    assert error.value.status_code == 413 and chunks == 2

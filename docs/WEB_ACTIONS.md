@@ -53,6 +53,8 @@ Le backend conserve toutes les contraintes et écritures d'audit existantes.
 - Autorisations serveur **avant** toute opération ; aucune permission implicite.
 - Les opérations réutilisent les transactions, validations d'état et protections d'idempotence du CLI.
 - Réponse 303 après succès ; pas de répétition automatique après rafraîchissement.
+- Politique de référent `same-origin` : les formulaires Chromium conservent une
+  origine vérifiable ; les origines nulles ou étrangères restent refusées.
 - En cas d'erreur de validation, une réponse neutre est renvoyée au navigateur.
 - Cette implémentation n'a ni anti-bruteforce interprocessus ni gestion multi-comptes :
   usage **local uniquement**, pas une solution IAM de production.
@@ -62,5 +64,18 @@ Le backend conserve toutes les contraintes et écritures d'audit existantes.
 
 Les tests couvrent le mode désactivé, l'authentification, l'origine, le CSRF,
 l'altération de cookie, le cloisonnement des permissions et les effets en base.
-Une validation dans un navigateur réel et une revue de sécurité restent
-nécessaires avant tout déploiement autre que localhost.
+Le parcours Chromium connexion → approbation → génération MOCK → déconnexion est
+vérifié par l'audit global. Toute exposition autre que localhost reste hors périmètre.
+
+## Limites de reprise à traiter
+
+La génération et le sandbox tournent actuellement dans la requête HTTP, sans
+registre persistant des demandes web. Deux envois du formulaire d'approbation
+sandbox créent deux autorisations ; deux demandes de lancement peuvent consommer
+deux autorisations disponibles. La redirection 303 ne garantit pas l'idempotence
+entre requêtes concurrentes. Ne pas présenter ces actions comme un pilotage durable.
+
+La déconnexion supprime le cookie dans le navigateur ; une copie du cookie reste
+valide jusqu'à expiration ou rotation des secrets suivie du redémarrage du serveur.
+La révocation individuelle et la durabilité sont dans
+[la mission de finalisation](PROMPT_CLAUDE_FINALISATION.md).
